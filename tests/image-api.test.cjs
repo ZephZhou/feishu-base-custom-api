@@ -30,13 +30,13 @@ test('attachment tokens preserve field/record context and errors never degrade t
  table.getCellValue=async()=>{throw Error('permission denied')};await assert.rejects(api.attachmentUrls(table,'white','row'),/permission/);
 });
 test('HTTP errors do not retry; malformed/missing results and CORS failures surface',async()=>{
- let calls=0;await assert.rejects(api.generate(options,undefined,async()=>{calls++;return Response.json({error:{message:'bad parameter'}},{status:400})}),/400.*bad parameter/);assert.equal(calls,1);
+ let calls=0;await assert.rejects(api.generate(options,undefined,async()=>{calls++;return Response.json({error:{message:'bad parameter'}},{status:400})}),/HTTP 400/);assert.equal(calls,1);
  await assert.rejects(api.generate(options,undefined,async()=>Response.json({data:[]})),/缺少/);
  await assert.rejects(api.generate(options,undefined,async()=>{throw TypeError('Failed to fetch')}),/CORS/);
  await assert.rejects(api.generate({...options,text:''}),/提示词/);
 });
 test('invalid reference data and abort do not reach paid endpoint',async()=>{
- await assert.rejects(api.generate({...options,imageUrls:['https://attachment.test/a']},undefined,async()=>new Response('<html>denied</html>',{headers:{'Content-Type':'text/html'}})),/PNG/);
+ await assert.rejects(api.generate({...options,imageUrls:['https://attachment.test/a']},undefined,async()=>new Response('<html>denied</html>',{headers:{'Content-Type':'text/html'}})),/附件下载|PNG/);
  const controller=new AbortController();controller.abort();await assert.rejects(api.generate(options,controller.signal,async()=>{throw new DOMException('stop','AbortError')}),{name:'AbortError'});
 });
 test('Base64 uploads actual PNG File then writes target attachment cell',async()=>{
@@ -51,4 +51,13 @@ test('URL result download, upload failure, invalid base64/content and write fail
  await assert.rejects(api.write({...args,result:{b64:Buffer.from('not a PNG').toString('base64')}}),/MIME/);
  await assert.rejects(api.write(args,async()=>new Response('',{status:403})),/403/);
  await assert.rejects(api.write({...args,result:{b64:png.toString('base64')},base:{batchUploadFile:async()=>['token']},table:{setCellValue:async()=>{throw Error('write denied')}}}),/write denied/);
+});
+
+test('frontend correlates safe progress with request ID and response-body failures',async()=>{
+ const events=[];let calls=0;let id;
+ await assert.rejects(api.generate({...options,onProgress:e=>events.push(e)},undefined,async(url,init)=>{
+  calls++;id=init.headers['X-Request-ID'];assert.match(id,/^[0-9a-f-]{36}$/);
+  return {ok:true,json:async()=>{throw Error('SENSITIVE-response-body')}};
+ }),error=>error.message.includes(id)&&error.message.includes('response_body')&&!error.message.includes('SENSITIVE-response-body'));
+ assert.equal(calls,1);assert.ok(events.every(e=>e.request_id===id&&e.elapsed_ms>=0));assert.ok(!JSON.stringify(events).includes(options.key));
 });

@@ -98,3 +98,38 @@ test('documented npm start command runs in server directory with Render environm
   const r=await fetch('http://127.0.0.1:'+port+'/health');assert.equal(r.status,200);assert.deepEqual(await r.json(),{status:'ok'});
  }finally{process.kill(-child.pid,'SIGTERM');await new Promise(r=>child.exitCode!==null?r():child.once('exit',r));}
 });
+
+test('request IDs correlate safe stage logs and CORS; failures do not log secrets or bodies',async()=>{
+ const logs=[];const id='12345678-1234-1234-1234-123456789abc';let calls=0;
+ const server=createProxy({apiKey:'SENSITIVE-KEY',token:'z'.repeat(32),origins:['https://shop.github.io'],logger:r=>logs.push(r),fetcher:async(url,{trace})=>{calls++;trace('upstream_dns');throw Object.assign(Error('SENSITIVE-KEY SENSITIVE-PROMPT'),{code:'ENOTFOUND'});}});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));const url='http://127.0.0.1:'+server.address().port;
+ try {
+  const headers={Origin:'https://shop.github.io',Authorization:'Bearer '+'z'.repeat(32),'X-Request-ID':id,'Content-Type':'application/json'};
+  const preflight=await fetch(url+'/v1/images/edits',{method:'OPTIONS',headers});assert.match(preflight.headers.get('access-control-allow-headers'),/X-Request-ID/);
+  logs.length=0;
+  const r=await fetch(url+'/v1/images/generations',{method:'POST',headers,body:JSON.stringify({model:'gpt-image-2',prompt:'SENSITIVE-PROMPT',size:'1024x1024',n:1,output_format:'png'})});
+  assert.equal(r.status,502);assert.equal(r.headers.get('x-request-id'),id);assert.equal((await r.json()).request_id,id);assert.match(r.headers.get('access-control-expose-headers'),/X-Request-ID/);
+  assert.equal(calls,1);assert.ok(logs.some(r=>r.stage==='upload_received'&&r.bytes>0));
+  assert.ok(logs.some(r=>r.stage==='request_failed'&&r.failed_stage==='upstream_dns'&&r.error_code==='ENOTFOUND'));
+  assert.ok(logs.every(r=>r.request_id===id&&r.elapsed_ms>=0));
+  const text=JSON.stringify(logs);for(const secret of ['SENSITIVE-KEY','SENSITIVE-PROMPT','z'.repeat(32)])assert.ok(!text.includes(secret));
+ }finally{await new Promise(r=>server.close(r));}
+});
+
+test('DNS/TCP/TLS connection stall has its own deadline, without retry',async()=>{
+ const {EventEmitter}=require('node:events');const {openAIRequest}=require('../server/image-proxy.cjs');let calls=0;
+ await assert.rejects(openAIRequest('https://api.openai.com/v1/images/generations',{headers:{},body:'{}',signal:new AbortController().signal,connectTimeoutMs:10},()=>{calls++;const req=new EventEmitter();req.end=()=>{};req.destroy=err=>req.emit('error',err);return req;}),{code:'ETIMEDOUT'});assert.equal(calls,1);
+});
+
+test('native transport reports ordered connection stages and rejects truncated response',async()=>{
+ const {EventEmitter}=require('node:events');const {openAIRequest}=require('../server/image-proxy.cjs');
+ const stages=[];
+ await assert.rejects(openAIRequest('https://api.openai.com/v1/images/generations',{headers:{},body:'{}',signal:new AbortController().signal,trace:s=>stages.push(s)},(url,options,callback)=>{
+  const req=new EventEmitter();req.end=bytes=>{
+   assert.equal(options.headers['content-length'],String(bytes.length));
+   const socket=new EventEmitter();req.emit('socket',socket);socket.emit('lookup',null);socket.emit('connect');socket.emit('secureConnect');req.emit('finish');
+   const response=new EventEmitter();response.statusCode=200;callback(response);response.emit('aborted');
+  };return req;
+ }),{code:'ECONNRESET'});
+ assert.deepEqual(stages,['upstream_serialized','upstream_socket','upstream_dns','upstream_tcp','upstream_tls','upstream_sent','upstream_headers']);
+});

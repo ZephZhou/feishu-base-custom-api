@@ -608,6 +608,7 @@ let table = null, tableId = null, fieldMetas = [];
 let running = false, stopFlag = false;
 const aborters = new Set();
 const MAX_IMGS_PER_ROW = 16;
+const IMAGE_REQ_TIMEOUT_MS = 1020000; // 参考图下载 + 上传300秒 + 生成600秒 + 回写缓冲；不自动重试
 const REQ_TIMEOUT_MS = 200000;   // 单请求硬超时:防上游API空转,超时即断,绝不重试
 
 async function refreshTable() {
@@ -767,7 +768,8 @@ function imagesEndpoint(kind) { return ImageAPI.endpoint($('apiBase').value, kin
 async function callImage(input, signal) {
   return ImageAPI.generate({ base: $('apiBase').value, key: $('apiKey').value.trim(),
     model: $('model').value.trim() || 'gpt-image-2', size: $('imgSize').value || '1024x1536',
-    text: input.text, imageUrls: input.imageUrls }, signal);
+    text: input.text, imageUrls: input.imageUrls,
+    onProgress: d => log('图片请求 ' + d.request_id + ' · ' + d.stage + ' · ' + (d.elapsed_ms / 1000).toFixed(1) + '秒') }, signal);
 }
 async function writeImage(fid, rid, result, signal) {
   return ImageAPI.write({table, base: bitable.base, fid, rid, result, signal});
@@ -1030,7 +1032,7 @@ async function processRecords(recordIds) {
         const input = await buildInput(rid);
         if (!input) { skip++; log('· 行' + rid.slice(-6) + ' 无参考图/无提示词,跳过'); continue; }
         const ac = new AbortController(); aborters.add(ac);
-        const timer = setTimeout(() => ac.abort(), REQ_TIMEOUT_MS);   // 硬超时防空转
+        const timer = setTimeout(() => ac.abort(), isImageMode() ? IMAGE_REQ_TIMEOUT_MS : REQ_TIMEOUT_MS);   // 硬超时防空转
         try {
           if (isTextMode()) {
             const txt = await callText(input, ac.signal);
@@ -1046,7 +1048,7 @@ async function processRecords(recordIds) {
         } finally { clearTimeout(timer); aborters.delete(ac); }
       } catch (e) {
         fail++;
-        log('行' + rid.slice(-6) + ' ' + (e.name === 'AbortError' ? '超时/已停止(不重试)' : e.message), 1);
+        log('行' + rid.slice(-6) + ' ' + e.message, 1);
       }
     }
   };
