@@ -6,9 +6,9 @@ function runtime(width=2880,height=2880,{exportFails=false}={}){
  const canvas={getContext:()=>({drawImage:(bitmap,...coords)=>calls.push(coords),clearRect:(...coords)=>clears.push(coords)}),toBlob:callback=>callback(exportFails?null:new Blob([png],{type:'image/png'}))};
  return {runtime:{createImageBitmap:async()=>({width,height,close:()=>{closed=true;}}),document:{createElement:()=>canvas}},calls,clears,closed:()=>closed};
 }
-test('2x2 independently insets all four quadrants by 4px without resizing',async()=>{
+test('2x2 independently insets all four quadrants by 24px without resizing',async()=>{
  const mock=runtime();const blobs=await api.crop2x2(new Blob([png]),undefined,mock.runtime);
- assert.equal(blobs.length,4);assert.deepEqual(mock.calls,[[4,4,1432,1432,0,0,1432,1432],[1444,4,1432,1432,0,0,1432,1432],[4,1444,1432,1432,0,0,1432,1432],[1444,1444,1432,1432,0,0,1432,1432]]);assert.deepEqual(mock.clears,Array.from({length:4},()=>[0,0,1432,1432]));assert.ok(mock.closed());
+ assert.equal(blobs.length,4);assert.deepEqual(mock.calls,[[24,24,1392,1392,0,0,1392,1392],[1464,24,1392,1392,0,0,1392,1392],[24,1464,1392,1392,0,0,1392,1392],[1464,1464,1392,1392,0,0,1392,1392]]);assert.deepEqual(mock.clears,Array.from({length:4},()=>[0,0,1392,1392]));assert.ok(mock.closed());
 });
 test('non-square, odd dimensions, Canvas unavailability and failed export give clear errors',async()=>{
  for(const [w,h,pattern] of [[1024,1536,/不是正方形/],[1025,1025,/偶数/]]){const mock=runtime(w,h);await assert.rejects(api.crop2x2(new Blob([png]),undefined,mock.runtime),pattern);assert.equal(mock.calls.length,0);assert.ok(mock.closed());}
@@ -38,7 +38,7 @@ test('unexpected multiple paid originals remain recoverable and never overwrite 
 });
 
 test('inset validates actual quadrant size and never silently shrinks the margin',async()=>{
- const small=runtime(16,16);await assert.rejects(api.crop2x2(new Blob([png]),undefined,small.runtime),/内缩4px后无有效像素/);assert.equal(small.calls.length,0);assert.ok(small.closed());
- const minimum=runtime(18,18);await api.crop2x2(new Blob([png]),undefined,minimum.runtime);assert.deepEqual(minimum.calls[0],[4,4,1,1,0,0,1,1]);
+ const small=runtime(96,96);await assert.rejects(api.crop2x2(new Blob([png]),undefined,small.runtime),/内缩24px后无有效像素/);assert.equal(small.calls.length,0);assert.ok(small.closed());
+ const minimum=runtime(98,98);await api.crop2x2(new Blob([png]),undefined,minimum.runtime);assert.deepEqual(minimum.calls[0],[24,24,1,1,0,0,1,1]);
  for(const inset of [-1,1.5,NaN,Infinity]){const invalid=runtime();await assert.rejects(api.crop2x2(new Blob([png]),undefined,invalid.runtime,inset),/非负整数/);assert.equal(invalid.calls.length,0);}
 });

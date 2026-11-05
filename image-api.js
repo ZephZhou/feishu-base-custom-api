@@ -1,6 +1,7 @@
 /* Shared browser/Node image pipeline. No credentials or external dependencies. */
 (function (root) {
   const rules = typeof module !== 'undefined' ? require('./server/image-rules.js') : root.ImageRules;
+  const AUTO_CROP_INSET_PX = 24;
   const MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
   function endpoint(base, kind) {
     const u = new URL(base.trim());
@@ -98,7 +99,7 @@
     if(!ctx || typeof canvas?.toBlob!=='function')throw Error('当前浏览器 Canvas 2D 或 toBlob 不可用，无法自动裁切，请取消勾选');
     return {canvas,ctx};
   }
-  async function crop2x2(blob, signal, runtime = root, inset = 4) {
+  async function crop2x2(blob, signal, runtime = root, inset = AUTO_CROP_INSET_PX) {
     if(!Number.isSafeInteger(inset) || inset<0)throw Error('安全内缩量必须为非负整数像素');
     const {canvas,ctx}=checkCropSupport(runtime);
     let bitmap;
