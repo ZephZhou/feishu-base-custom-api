@@ -98,7 +98,8 @@
     if(!ctx || typeof canvas?.toBlob!=='function')throw Error('当前浏览器 Canvas 2D 或 toBlob 不可用，无法自动裁切，请取消勾选');
     return {canvas,ctx};
   }
-  async function crop2x2(blob, signal, runtime = root) {
+  async function crop2x2(blob, signal, runtime = root, inset = 4) {
+    if(!Number.isSafeInteger(inset) || inset<0)throw Error('安全内缩量必须为非负整数像素');
     const {canvas,ctx}=checkCropSupport(runtime);
     let bitmap;
     const stopped=()=>{if(signal?.aborted)throw new DOMException('裁切已停止；请保存原始拼版图，勿重复生图','AbortError');};
@@ -109,11 +110,13 @@
       const {width,height}=bitmap;
       if(width!==height)throw Error('原始图片为 '+width+'×'+height+'，不是正方形，未裁切或拉伸；请下载原图');
       if(!Number.isSafeInteger(width) || width<2 || width%2)throw Error('原始图片边长须为大于等于2的偶数，才能无损等分四张；请下载原图');
-      const side=width/2;canvas.width=side;canvas.height=side;ctx.imageSmoothingEnabled=false;
+      const side=width/2, outputSide=side-2*inset;
+      if(outputSide<1)throw Error('原始图片太小，每个象限四边内缩'+inset+'px后无有效像素；请下载原图');
+      canvas.width=outputSide;canvas.height=outputSide;ctx.imageSmoothingEnabled=false;
       const images=[];
       for(const [x,y] of [[0,0],[side,0],[0,side],[side,side]]){
         stopped();
-        try{ctx.clearRect(0,0,side,side);ctx.drawImage(bitmap,x,y,side,side,0,0,side,side);}
+        try{ctx.clearRect(0,0,outputSide,outputSide);ctx.drawImage(bitmap,x+inset,y+inset,outputSide,outputSide,0,0,outputSide,outputSide);}
         catch{throw Error('Canvas 像素裁切失败，请下载原图恢复；不会重新调用付费API');}
         let cropped;
         try{cropped=await new Promise((resolve,reject)=>canvas.toBlob(b=>b?.size?resolve(b):reject(Error('empty canvas result')),'image/png'));}
