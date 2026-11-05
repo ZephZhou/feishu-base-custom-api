@@ -30,36 +30,47 @@
     if (!valid) throw Error('图片内容与 MIME 不符，可能下载到了错误页面');
     return blob;
   }
-  async function generate({ base, key, model = 'gpt-image-2', size, text, imageUrls = [] }, signal, fetcher = fetch) {
+  async function generate({ base, key, model = 'gpt-image-2', size, text, imageUrls = [], onProgress = () => {} }, signal, fetcher = fetch) {
     if (!text.trim()) throw Error('图片模式请填写场景提示词');
     if (imageUrls.length > 16) throw Error('最多支持16张参考图');
-    const edit = imageUrls.length > 0;
-    const headers = { Authorization: 'Bearer ' + key };
-    let body;
-    if (edit) {
-      body = new FormData();
-      for (const [i, url] of imageUrls.entries()) {
-        const blob = await imageBlob(await fetcher(url, { signal }));
-        body.append('image[]', blob, 'reference-' + i + '.' + MIME[blob.type]);
+    const requestId = globalThis.crypto.randomUUID();
+    const started = Date.now(); let stage;
+    const trace = next => { stage = next; try { onProgress({request_id:requestId, stage, elapsed_ms:Date.now()-started}); } catch {} };
+    try {
+      trace('reference_download');
+      const edit = imageUrls.length > 0;
+      const headers = { Authorization: 'Bearer ' + key, 'X-Request-ID':requestId };
+      let body;
+      if (edit) {
+        body = new FormData();
+        for (const [i, url] of imageUrls.entries()) {
+          const blob = await imageBlob(await fetcher(url, { signal }));
+          body.append('image[]', blob, 'reference-' + i + '.' + MIME[blob.type]);
+        }
+        for (const [k,v] of Object.entries({model, prompt:text, size, n:'1', output_format:'png'})) body.append(k,v);
+      } else {
+        headers['Content-Type'] = 'application/json';
+        body = JSON.stringify({model, prompt:text, size, n:1, output_format:'png'});
       }
-      for (const [k,v] of Object.entries({model, prompt:text, size, n:'1', output_format:'png'})) body.append(k,v);
-    } else {
-      headers['Content-Type'] = 'application/json';
-      body = JSON.stringify({model, prompt:text, size, n:1, output_format:'png'});
+      const url = endpoint(base, edit ? 'edits' : 'generations');
+      trace('proxy_request');
+      const response = await fetcher(url, {method:'POST', headers, body, signal});
+      trace('response_headers');
+      if (!response.ok) throw Object.assign(new Error('生图API HTTP ' + response.status), {safeHTTP:true});
+      trace('response_body');
+      const data = await response.json(); const first = data.data?.[0];
+      trace('response_complete');
+      if (first?.b64_json) return { b64:first.b64_json, edit, requestId };
+      if (first?.url && /^https:\/\//.test(first.url)) return {url:first.url, edit, requestId};
+      throw Object.assign(new Error('生图返回缺少有效 b64_json/url'), {safeHTTP:true});
+    } catch (e) {
+      const detail = e.safeHTTP ? e.message : e.name === 'AbortError' ? '图片请求超时或已停止' : '图片请求未完成：可能为网络/CORS、附件下载或响应中断';
+      const error = new Error(detail + '；请求ID ' + requestId + '；阶段 ' + stage + '；耗时 ' + ((Date.now()-started)/1000).toFixed(1) + '秒。状态可能不确定，请核对服务端日志，勿盲目重试以免重复扣费');
+      if (e.name === 'AbortError') error.name = 'AbortError';
+      throw error;
     }
-    let response;
-    try { response = await fetcher(endpoint(base, edit ? 'edits' : 'generations'), {method:'POST', headers, body, signal}); }
-    catch (e) { if (e.name === 'AbortError') throw e; throw Error('图片请求未完成：检查网络/CORS；建议使用安全中转。为避免重复扣费，不自动重试'); }
-    if (!response.ok) {
-      let message = '';
-      try { const data = await response.json(); message = data.error?.message || ''; } catch {}
-      throw Error('生图API HTTP ' + response.status + ': ' + message.slice(0,300));
-    }
-    const data = await response.json(); const first = data.data?.[0];
-    if (first?.b64_json) return { b64:first.b64_json, edit };
-    if (first?.url && /^https:\/\//.test(first.url)) return {url:first.url, edit};
-    throw Error('生图返回缺少有效 b64_json/url');
   }
+
   async function write({table, base, fid, rid, result, signal}, fetcher = fetch) {
     let response;
     if (result.b64) {
