@@ -38,7 +38,7 @@
   <label>API 地址</label>
   <input type="text" id="apiBase" placeholder="https://api.openai.com/v1/chat/completions 或任意中转地址">
   <label>API Key / 安全中转访问令牌</label>
-  <input type="password" id="apiKey" placeholder="sk-...">
+  <input type="password" id="apiKey" placeholder="图片模式填写 PROXY_TOKEN，不填写官方 Key">
   <label id="modelLabel">对话模型（不确定就留空，默认 gpt-4o-mini）</label>
   <input type="text" id="model" list="textModelList" placeholder="留空=gpt-4o-mini">
   <datalist id="textModelList">
@@ -124,9 +124,22 @@
       <select id="imgSize">
         <option value="1024x1536">竖版 1024×1536（主图/详情页）</option>
         <option value="1024x1024">方形 1024×1024</option>
-        <option value="1536x1024">横版 1536×1024</option>
+        <option value="1536x1024">横版 1536×1024</option><option value="custom">自定义尺寸（填写下方宽高）</option>
       </select>
     </div>
+  </div>
+  <div id="imageExtras" style="display:none">
+    <label>生成数量（一次请求返回多张，数量越多费用越高）</label>
+    <select id="imageCount"><option value="1">1 张</option><option value="2">2 张</option><option value="3">3 张</option><option value="4">4 张</option><option value="5">5 张</option><option value="6">6 张</option><option value="7">7 张</option><option value="8">8 张</option><option value="9">9 张</option><option value="10">10 张</option></select>
+    <div class="row"><div><label>宽度（像素）</label><input id="imageWidth" type="number" min="16" max="3840" step="16" value="1024"></div><div><label>高度（像素）</label><input id="imageHeight" type="number" min="16" max="3840" step="16" value="1024"></div></div>
+    <div class="hint">宽高为16的倍数，比例1:3～3:1，最长边3840，总像素655360～8294400。图片模式保留旧附件并追加新结果；大批量请降低行并发。</div>
+    <label>选择 Prompt 模板</label><select id="templateSelect"></select>
+    <label>模板名称</label><input id="templateName" maxlength="100" placeholder="选择“新建模板”后填写名称">
+    <div class="row"><button id="saveTemplate" type="button">保存模板</button><button id="renameTemplate" type="button">重命名</button><button id="deleteTemplate" type="button">删除模板</button></div>
+    <label>固定品牌参考图（最多4张，商品行图片在前，品牌图在后）</label>
+    <div id="brandSlots"></div>
+    <div class="hint">品牌图与模板仅保存在当前浏览器；清理网站数据、隐私模式或换设备可能丢失。支持重新上传替换和删除，不会上传到 GitHub。</div>
+    <div id="imageError" class="err" role="alert" aria-live="polite"></div>
   </div>
   <div class="row">
     <div>
@@ -497,7 +510,9 @@ html body {
 //# sourceMappingURL=/sm/a6f526bd5d6e5f46169550416b3eea14dc63ecfa095a21af51c761e6443576fa.map
 window.__BITABLE__ = tQ;  /* tQ = SDK内部 export{ tQ as bitable } 的真实别名 */
 </script>
+<script src="./server/image-rules.js"></script>
 <script src="./image-api.js"></script>
+<script src="./image-options.js"></script>
 <script type="module">
 const $ = id => document.getElementById(id);
 const log = (msg, isErr) => { const el = $('log'); el.style.display='block'; el.textContent += (isErr?'✗ ':'') + msg + '\n'; el.scrollTop = el.scrollHeight; };
@@ -516,7 +531,7 @@ async function loadSDK() {
 
 // ── 配置持久化 ──
 const CFG_KEY = 'ai-filler-cfg';
-const loadCfg = () => { try { return JSON.parse(localStorage.getItem(CFG_KEY)) || {}; } catch { return {}; } };
+const loadCfg = () => { try { const cfg = JSON.parse(localStorage.getItem(CFG_KEY)) || {}; if (ImageRules.isOfficialKey(cfg.apiKey)) { delete cfg.apiKey; localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } return cfg; } catch { return {}; } };
 let activeTaskType = null;
 const modeCfgKey = (kind, type) => type + kind.charAt(0).toUpperCase() + kind.slice(1);
 function loadModeCfg(cfg, kind, type) {
@@ -530,9 +545,10 @@ const saveCfg = () => {
   const mode = activeTaskType || $('taskType').value;
   const next = {
     ...previous,
-    apiBase: $('apiBase').value, apiKey: $('apiKey').value, model: $('model').value, prompt: $('prompt').value,
+    apiBase: $('apiBase').value, apiKey: ImageRules.isOfficialKey($('apiKey').value) ? '' : $('apiKey').value, model: $('model').value, prompt: $('prompt').value,
     inputs: [...document.querySelectorAll('.chip.on')].map(c => c.textContent),
     output: $('outputSel').value, concurrency: $('concurrency').value, maxRows: $('maxRows').value, imgSize: $('imgSize').value,
+    imageCount: $('imageCount').value, imageWidth: $('imageWidth').value, imageHeight: $('imageHeight').value, imageTemplate: $('templateSelect').value,
     taskType: $('taskType').value, taskCol: $('taskCol').value,
     vidApiKind: $('vidApiKind').value, vidApiBase: $('vidApiBase').value, vidApiKey: $('vidApiKey').value,
     vidModel: $('vidModel').value, vidDur: $('vidDur').value, vidRes: $('vidRes').value, vidRatio: $('vidRatio').value, vidImgMode: $('vidImgMode').value,
@@ -573,6 +589,8 @@ function toggleTaskUI() {
   const isVid = isVideoMode(), isTxt = isTextMode(), isImg = isImageMode();
   $('videoCfg').style.display = isVid ? '' : 'none';
   $('sizeRow').style.display = isImg ? '' : 'none';
+  $('imageExtras').style.display = isImg ? '' : 'none';
+  $('skipMode').options[1].textContent = isImg ? '继续生成（保留旧附件并追加）' : '覆盖重写';
   $('resumeBtn').style.display = isVid ? '' : 'none';
   $('textHint').style.display = isTxt ? '' : 'none';
   $('imgHint').style.display = isImg ? '' : 'none';
@@ -606,6 +624,7 @@ function switchTaskType() {
 // ── 全局状态 ──
 let table = null, tableId = null, fieldMetas = [];
 let running = false, stopFlag = false;
+let imageOptions = null, imageRunOptions = null;
 const aborters = new Set();
 const MAX_IMGS_PER_ROW = 16;
 const IMAGE_REQ_TIMEOUT_MS = 1020000; // 参考图下载 + 上传300秒 + 生成600秒 + 回写缓冲；不自动重试
@@ -652,6 +671,7 @@ async function init() {
   $('model').value = loadModeCfg(cfg, 'model', activeTaskType);
   ['vidApiKind','vidApiBase','vidApiKey','vidModel','vidDur','vidRes','vidRatio','vidImgMode'].forEach(id => { if (cfg[id] != null && cfg[id] !== '') $(id).value = cfg[id]; });
   ['apiBase','apiKey','model','prompt','outputSel','concurrency','maxRows','imgSize','taskCol','vidApiKind','vidApiBase','vidApiKey','vidModel','vidDur','vidRes','vidRatio','vidImgMode'].forEach(id => $(id).addEventListener('change', saveCfg));
+  imageOptions = await ImageOptions.init({$, cfg, saveCfg, onError: message => log(message, 1)});
   $('taskType').addEventListener('change', switchTaskType);
   toggleTaskUI();
   try { await refreshTable(); } catch (e) { log('读取表格失败: ' + (e && e.message ? e.message : e), 1); }
@@ -710,7 +730,9 @@ async function buildInput(recordId) {
   const tpl = $('prompt').value;
   let text = tpl;
   const extra = []; const imageUrls = [];
-  for (const n of selectedInputs()) {
+  const inputNames = selectedInputs();
+  if (isImageMode()) inputNames.sort((a,b) => Number(b === '白底图') - Number(a === '白底图'));
+  for (const n of inputNames) {
     const meta = fieldMetaByName(n);
     if (meta.type === 17) {
       const urls = await ImageAPI.attachmentUrls(table, meta.id, recordId, MAX_IMGS_PER_ROW);
@@ -767,12 +789,12 @@ async function writeText(fid, rid, text) {
 function imagesEndpoint(kind) { return ImageAPI.endpoint($('apiBase').value, kind); }
 async function callImage(input, signal) {
   return ImageAPI.generate({ base: $('apiBase').value, key: $('apiKey').value.trim(),
-    model: $('model').value.trim() || 'gpt-image-2', size: $('imgSize').value || '1024x1536',
+    model: $('model').value.trim() || 'gpt-image-2', ...imageRunOptions,
     text: input.text, imageUrls: input.imageUrls,
     onProgress: d => log('图片请求 ' + d.request_id + ' · ' + d.stage + ' · ' + (d.elapsed_ms / 1000).toFixed(1) + '秒') }, signal);
 }
 async function writeImage(fid, rid, result, signal) {
-  return ImageAPI.write({table, base: bitable.base, fid, rid, result, signal});
+  return ImageAPI.write({table, base: bitable.base, fid, rid, result, signal, append:true});
 }
 
 // ══════════ 🎬 视频生成(全行业都是异步任务制:提交→轮询→取片) ══════════
@@ -1040,10 +1062,12 @@ async function processRecords(recordIds) {
             done++;
             log('✅ 行' + rid.slice(-6) + ' 文本写入完成(' + txt.length + '字)');
           } else {
+            await table.getCellValue(outFid, rid); // 先确认可读，避免付费后才发现无法保留旧附件
             const res = await callImage(input, ac.signal);
             const sz = await writeImage(outFid, rid, res, ac.signal);
+            if (res.images.length !== res.expectedCount) log('上游返回 ' + res.images.length + '/' + res.expectedCount + ' 张，有效图片已保留；不自动重试以免重复扣费', 1);
             done++;
-            log('✅ 行' + rid.slice(-6) + ' 出图完成(' + (res.edit ? '图生图' : '文生图') + '·' + Math.round(sz / 1024) + 'KB)');
+            log('✅ 行' + rid.slice(-6) + ' 出图完成(' + res.images.length + '张·' + (res.edit ? '图生图' : '文生图') + '·' + Math.round(sz / 1024) + 'KB)');
           }
         } finally { clearTimeout(timer); aborters.delete(ac); }
       } catch (e) {
@@ -1068,6 +1092,10 @@ async function guardedRun(getTargets, allowStopToggle, processor, opts) {
   } else if (!$('apiKey').value) { log('请先填 API Key', 1); return; }
   if (!$('outputSel').value) { log(isTextMode() ? '请先在表里建一个"文本"字段当输出列' : '请先在表里建一个"附件"字段当输出列', 1); return; }
   if (!(opts && opts.noPrompt) && !$('prompt').value.trim() && !selectedInputs().length) { log('请写提示词,或选一个含提示词/产品图的输入列', 1); return; }
+  if (isImageMode()) {
+    try { if (!imageOptions) throw new Error('图片配置正在读取，请稍后'); imageRunOptions = imageOptions.snapshot(); $('imageError').textContent = ''; }
+    catch(e) { $('imageError').textContent = e.message; log(e.message, 1); return; }
+  }
   saveCfg();
   running = true; stopFlag = false;
   const btn = $('runBtn'); btn.textContent = '⏹ 点击停止'; btn.classList.add('stop');
@@ -1075,7 +1103,7 @@ async function guardedRun(getTargets, allowStopToggle, processor, opts) {
     try { const sel = await bitable.base.getSelection(); if (sel && sel.tableId && sel.tableId !== tableId) { await refreshTable(); log('检测到切换了数据表,字段已刷新——请重新确认后再点', 1); return; } } catch (e) {}
     const targets = await getTargets();
     if (!targets || !targets.length) { if (!stopFlag) log('没有待处理的行(输出已填 或 输入为空)'); return; }
-    log('待处理 ' + targets.length + ' 行,并发 ' + ($('concurrency').value || 3));
+    log('待处理 ' + targets.length + ' 行,并发 ' + ($('concurrency').value || 3) + (isImageMode() ? '，每行一次请求生成 ' + imageRunOptions.n + ' 张；失败不自动重试' : ''));
     await (processor || (isVid ? processVideoRecords : processRecords))(targets);
   } catch (e) { log('运行出错: ' + e.message, 1); }
   finally { running = false; stopFlag = false; btn.textContent = runBtnLabel(); btn.classList.remove('stop'); }

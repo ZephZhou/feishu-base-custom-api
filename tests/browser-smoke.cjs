@@ -2,7 +2,7 @@
 const {chromium}=require('playwright'); const http=require('node:http');const fs=require('node:fs');const path=require('node:path');const assert=require('node:assert/strict');
 (async()=>{
  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5WQAAAAASUVORK5CYII=','base64');
- const server=http.createServer((req,res)=>{const name=req.url==='/image-api.js'?'image-api.js':'index.html';res.setHeader('Content-Type',name.endsWith('.js')?'text/javascript':'text/html');res.end(fs.readFileSync(path.join(__dirname,'..',name)));});
+ const server=http.createServer((req,res)=>{const name=['/image-api.js','/image-options.js','/server/image-rules.js'].includes(req.url)?req.url.slice(1):'index.html';res.setHeader('Content-Type',name.endsWith('.js')?'text/javascript':'text/html');res.end(fs.readFileSync(path.join(__dirname,'..',name)));});
  await new Promise(r=>server.listen(0,'127.0.0.1',r));let browser;
  try {
   browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH || '/usr/bin/chromium',headless:true,args:['--no-sandbox']});const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));let requests=0;

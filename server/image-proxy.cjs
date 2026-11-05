@@ -1,6 +1,7 @@
 // Node >= 22. Fixed OpenAI upstream; never accepts upstream URLs or keys from clients.
 const http = require('node:http');
 const https = require('node:https');
+const ImageRules = require('./image-rules.js');
 const { randomUUID, timingSafeEqual } = require('node:crypto');
 const UPLOAD_TIMEOUT_MS = 300000;
 const GENERATION_TIMEOUT_MS = 600000;
@@ -17,15 +18,15 @@ async function openAIRequest(url, {headers, body, signal, trace = () => {}, conn
     const upstream = requestImpl(url, {method:'POST', headers:{...Object.fromEntries(request.headers), 'content-length':String(bytes.byteLength)}, signal}, response => {
       clearTimeout(connectTimer);
       trace('upstream_headers', {status:response.statusCode});
-      const chunks = []; let size = 0;
+      const chunks = []; let size = 0, limitError;
       response.on('data', chunk => {
         size += chunk.length;
-        if (size > 64 * 1024 * 1024) response.destroy(new Error('Upstream response too large'));
+        if (size > ImageRules.MAX_RESPONSE_BYTES) { limitError=Object.assign(new Error('Upstream response too large'), {code:'RESULT_TOO_LARGE'}); response.destroy(limitError); }
         else chunks.push(chunk);
       });
       response.on('error', reject);
-      response.on('aborted', () => { const error = new Error('Upstream response aborted'); error.code = 'ECONNRESET'; reject(error); });
-      response.on('end', () => { trace('upstream_body', {bytes:size}); resolve({ok:response.statusCode >= 200 && response.statusCode < 300, status:response.statusCode, json:async()=>JSON.parse(Buffer.concat(chunks).toString())}); });
+      response.on('aborted', () => { const error = new Error('Upstream response aborted'); error.code = 'ECONNRESET'; reject(limitError || error); });
+      response.on('end', () => { trace('upstream_body', {bytes:size}); let text=Buffer.concat(chunks).toString(); chunks.length=0; resolve({ok:response.statusCode >= 200 && response.statusCode < 300, status:response.statusCode, json:async()=>{try{return JSON.parse(text);}finally{text='';}}}); });
     });
     // This deadline covers DNS, TCP and TLS only, not model generation.
     connectTimer = setTimeout(() => { const error = new Error('Upstream connection timeout'); error.code = 'ETIMEDOUT'; upstream.destroy(error); }, connectTimeoutMs);
@@ -42,9 +43,9 @@ async function openAIRequest(url, {headers, body, signal, trace = () => {}, conn
     upstream.end(Buffer.from(bytes));
   });
 }
-function createProxy({apiKey, token, origins, fetcher = openAIRequest, maxBytes = 52 * 1024 * 1024, generationTimeoutMs = GENERATION_TIMEOUT_MS, logger = record => console.log(JSON.stringify(record))}) {
+function createProxy({apiKey, token, origins, fetcher = openAIRequest, maxBytes = 52 * 1024 * 1024, generationTimeoutMs = GENERATION_TIMEOUT_MS, memoryAvailable = () => process.availableMemory?.() ?? 256*1024*1024, logger = record => console.log(JSON.stringify(record))}) {
   if (!apiKey || !token || token.length < 32 || !origins?.length || origins.includes('*')) throw Error('配置 OPENAI_API_KEY、至少32字符的 PROXY_TOKEN 和明确的 ALLOWED_ORIGINS');
-  let active = 0;
+  let active = 0, reservedMemory = 0;
   const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, {'Content-Type':'application/json', 'Cache-Control':'no-store'});
@@ -66,7 +67,7 @@ function createProxy({apiKey, token, origins, fetcher = openAIRequest, maxBytes 
     res.on('finish', () => trace('response_finished', {status:res.statusCode}));
     res.on('close', () => { if (!res.writableEnded) trace('client_disconnected'); });
     const origin = req.headers.origin;
-    const reply = (status, message) => { res.writeHead(status, {'Content-Type':'application/json', 'Cache-Control':'no-store'}); res.end(JSON.stringify({error:{message}, request_id:requestId})); };
+    const reply = (status, message, code) => { res.writeHead(status, {'Content-Type':'application/json', 'Cache-Control':'no-store'}); res.end(JSON.stringify({error:{message, ...(code ? {code} : {})}, request_id:requestId})); };
     if (!origins.includes(origin)) return reply(403, 'Origin denied');
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
@@ -82,7 +83,7 @@ function createProxy({apiKey, token, origins, fetcher = openAIRequest, maxBytes 
     trace('authorized');
     active++;
     const controller = new AbortController();
-    let timer;
+    let timer, memoryReservation = 0;
     res.on('close', () => { if (!res.writableEnded) controller.abort(); });
     try {
       trace('upload_receiving');
@@ -99,6 +100,7 @@ function createProxy({apiKey, token, origins, fetcher = openAIRequest, maxBytes 
         data = await new Request('http://localhost', {method:'POST', headers:{'Content-Type':type}, body:raw}).formData();
         const allowed = new Set(['model','prompt','size','n','output_format','image[]']);
         if ([...data.keys()].some(k=>!allowed.has(k))) return reply(400,'Unsupported edit field');
+        if (['model','prompt','size','n','output_format'].some(k=>data.getAll(k).length!==1)) return reply(400,'Missing or duplicate edit option');
         const images = data.getAll('image[]');
         if (!images.length || images.length > 16 || images.some(i=> typeof i === 'string' || !['image/png','image/jpeg','image/webp'].includes(i.type) || !i.size || i.size >= 50*1024*1024)) return reply(400,'Invalid reference images');
         body = data;
@@ -109,7 +111,13 @@ function createProxy({apiKey, token, origins, fetcher = openAIRequest, maxBytes 
         body = JSON.stringify(data); headers['Content-Type']='application/json';
       }
       const get = k => edit ? data.get(k) : data[k];
-      if (get('model') !== 'gpt-image-2' || String(get('n')) !== '1' || get('output_format') !== 'png' || !['1024x1024','1024x1536','1536x1024'].includes(get('size')) || typeof get('prompt') !== 'string' || !get('prompt').trim() || get('prompt').length > 32000) return reply(400,'Invalid model, prompt, size or output options');
+      if (get('model') !== 'gpt-image-2' || get('output_format') !== 'png' || typeof get('prompt') !== 'string' || !get('prompt').trim() || get('prompt').length > 32000) return reply(400,'Invalid model, prompt, size or output options');
+      let imageOptions;
+      try { if (!/^(?:[1-9]|10)$/.test(String(get('n')))) throw Error('Invalid count'); imageOptions=ImageRules.checkResultBudget(get('size'),get('n')); }
+      catch {return reply(400,'图片数量、尺寸不合法或预计超过64MiB结果上限，请降低数量或尺寸；未提交上游','INVALID_IMAGE_OPTIONS');}
+      const neededMemory = 2*length + 3*imageOptions.estimatedBytes + 32*1024*1024;
+      if (neededMemory > memoryAvailable()*0.7 - reservedMemory) return reply(503,'中转可用内存不足，请降低行并发、生成数量或尺寸；本次未提交上游','RESOURCE_LIMIT');
+      memoryReservation=neededMemory; reservedMemory+=memoryReservation;
       trace('validated');
       // Upload parsing has its own server deadline; generation gets a fresh budget.
       timer = setTimeout(()=>{ trace('generation_timeout'); controller.abort(); }, generationTimeoutMs);
@@ -120,15 +128,19 @@ function createProxy({apiKey, token, origins, fetcher = openAIRequest, maxBytes 
       if (!upstream.ok) return reply(upstream.status, 'OpenAI request failed; check account permissions, quota and parameters');
       const result = await upstream.json();
       trace('response_parsed');
-      if (!result.data?.[0]?.b64_json) return reply(502,'OpenAI response missing image');
+      const images = (Array.isArray(result.data) ? result.data : []).filter(item=>typeof item?.b64_json==='string'&&item.b64_json).map(item=>({b64_json:item.b64_json}));
+      if (!images.length || images.length>10) return reply(502,'OpenAI response missing image or invalid count');
+      const output=JSON.stringify({data:images});
+      if(Buffer.byteLength(output)>ImageRules.MAX_RESPONSE_BYTES) return reply(502,'多图结果超过64MiB上限，本次可能已产生费用，请减少数量或尺寸','RESULT_TOO_LARGE');
       res.writeHead(200, {'Content-Type':'application/json','Cache-Control':'no-store'});
-      res.end(JSON.stringify({data:[{b64_json:result.data[0].b64_json}]}));
+      res.end(output);
     } catch (e) {
       const failedStage = stage;
-      const codes = new Set(['ENOTFOUND','EAI_AGAIN','ECONNREFUSED','ECONNRESET','ETIMEDOUT','CERT_HAS_EXPIRED','UNABLE_TO_VERIFY_LEAF_SIGNATURE']);
+      const codes = new Set(['ENOTFOUND','EAI_AGAIN','ECONNREFUSED','ECONNRESET','ETIMEDOUT','CERT_HAS_EXPIRED','UNABLE_TO_VERIFY_LEAF_SIGNATURE','RESULT_TOO_LARGE']);
       trace('request_failed', {failed_stage:failedStage, error_code:codes.has(e.code) ? e.code : controller.signal.aborted ? 'ABORTED' : 'OTHER'});
+      if (e.code==='RESULT_TOO_LARGE' && !res.headersSent && !res.destroyed) return reply(502,'多图结果超过64MiB上限，本次可能已产生费用，请减少数量或尺寸','RESULT_TOO_LARGE');
       if (!res.headersSent && !res.destroyed) reply(controller.signal.aborted ? 504 : 502, 'Image proxy request failed; no automatic retry'); }
-    finally { clearTimeout(timer); active--; }
+    finally { clearTimeout(timer); reservedMemory-=memoryReservation; active--; }
   });
   // requestTimeout covers receiving the upload, not waiting for OpenAI's response.
   server.requestTimeout = UPLOAD_TIMEOUT_MS;

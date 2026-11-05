@@ -133,3 +133,33 @@ test('native transport reports ordered connection stages and rejects truncated r
  }),{code:'ECONNRESET'});
  assert.deepEqual(stages,['upstream_serialized','upstream_socket','upstream_dns','upstream_tcp','upstream_tls','upstream_sent','upstream_headers']);
 });
+
+test('proxy allows n=4 custom size in one edit call and returns all images; rejects invalid options before upstream',async()=>{
+ let calls=0;const key='m'.repeat(32);
+ const server=createProxy({apiKey:'fake-feature-key',token:key,origins:['https://shop.github.io'],memoryAvailable:()=>1024**3,logger:()=>{},fetcher:async(url,init)=>{
+  calls++;assert.equal(url,'https://api.openai.com/v1/images/edits');assert.equal(init.headers.Authorization,'Bearer fake-feature-key');assert.equal(init.body.get('n'),'4');assert.equal(init.body.get('size'),'1536x864');return Response.json({data:Array.from({length:4},(_,i)=>({b64_json:'mock-'+i}))});
+ }});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));const url='http://127.0.0.1:'+server.address().port;
+ try {
+  const form=new FormData();for(const [k,v] of Object.entries({model:'gpt-image-2',prompt:'场景',size:'1536x864',n:'4',output_format:'png'}))form.append(k,v);form.append('image[]',new Blob(['mock-file'],{type:'image/png'}),'reference.png');
+  const headers={Origin:'https://shop.github.io',Authorization:'Bearer '+key};const response=await fetch(url+'/v1/images/edits',{method:'POST',headers,body:form});assert.equal(response.status,200);assert.equal((await response.json()).data.length,4);assert.equal(calls,1);
+  form.append('n','10');const duplicate=await fetch(url+'/v1/images/edits',{method:'POST',headers,body:form});assert.equal(duplicate.status,400);assert.equal(calls,1);
+  for(const change of [{n:11},{n:0},{size:'1025x1024'},{size:'3840x2160',n:2}]){
+   const r=await fetch(url+'/v1/images/generations',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({model:'gpt-image-2',prompt:'场景',size:'1024x1024',n:4,output_format:'png',...change})});assert.equal(r.status,400);assert.equal((await r.json()).error.code,'INVALID_IMAGE_OPTIONS');
+  }assert.equal(calls,1);
+ }finally{await new Promise(r=>server.close(r));}
+});
+
+test('proxy low-memory admission rejects before a paid call',async()=>{
+ const server=createProxy({apiKey:'fake-memory-key',token:'r'.repeat(32),origins:['https://shop.github.io'],memoryAvailable:()=>1,logger:()=>{},fetcher:()=>assert.fail('must not pay')});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ try{const r=await fetch('http://127.0.0.1:'+server.address().port+'/v1/images/generations',{method:'POST',headers:{Origin:'https://shop.github.io',Authorization:'Bearer '+'r'.repeat(32),'Content-Type':'application/json'},body:JSON.stringify({model:'gpt-image-2',prompt:'场景',size:'1024x1024',n:4,output_format:'png'})});assert.equal(r.status,503);assert.equal((await r.json()).error.code,'RESOURCE_LIMIT');}
+ finally{await new Promise(r=>server.close(r));}
+});
+
+test('oversize upstream result keeps RESULT_TOO_LARGE even when destroy emits aborted first',async()=>{
+ const {EventEmitter}=require('node:events');const {openAIRequest}=require('../server/image-proxy.cjs');const {MAX_RESPONSE_BYTES}=require('../server/image-rules.js');
+ await assert.rejects(openAIRequest('https://api.openai.com/v1/images/generations',{headers:{},body:'{}',signal:new AbortController().signal},(url,options,callback)=>{
+  const req=new EventEmitter();req.end=()=>{const response=new EventEmitter();response.statusCode=200;response.destroy=e=>{response.emit('aborted');response.emit('error',e);};callback(response);response.emit('data',{length:MAX_RESPONSE_BYTES+1});};return req;
+ }),{code:'RESULT_TOO_LARGE'});
+});
