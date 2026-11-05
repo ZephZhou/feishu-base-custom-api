@@ -31,9 +31,12 @@
     if (!valid) throw Error('图片内容与 MIME 不符，可能下载到了错误页面');
     return blob;
   }
-  async function generate({ base, key, model = 'gpt-image-2', size, n = 1, brandImages = [], text, imageUrls = [], onProgress = () => {} }, signal, fetcher = fetch) {
+  async function generate({ base, key, model = 'gpt-image-2', size, n = 1, autoCrop2x2 = false, brandImages = [], text, imageUrls = [], onProgress = () => {} }, signal, fetcher = fetch) {
     if (!text.trim()) throw Error('图片模式请填写场景提示词');
-    ({size,n} = rules.checkResultBudget(size,n));
+    if(autoCrop2x2)n=1;
+    const params=rules.checkResultBudget(size,n);
+    if(autoCrop2x2 && params.width!==params.height)throw Error('自动裁切模式只接受正方形图片，建议2880×2880');
+    ({size,n} = params);
     if (rules.isOfficialKey(key)) throw Error('官方 OpenAI Key 只能配置在 Render 服务端；前端请填写 PROXY_TOKEN');
     if (brandImages.length > 4) throw Error('固定品牌参考图最多4张');
     if (imageUrls.length + brandImages.length > 16) throw Error('最多支持16张参考图');
@@ -79,7 +82,7 @@
         return null;
       }).filter(Boolean);
       if (!images.length || images.length > 10) throw Object.assign(new Error('生图返回缺少有效 b64_json/url 或图片数量异常'), {safeHTTP:true});
-      return {images, edit, requestId, expectedCount:n};
+      return {images, edit, requestId, expectedCount:n, autoCrop2x2};
     } catch (e) {
       const detail = e.safeHTTP ? e.message : e.name === 'AbortError' ? '图片请求超时或已停止' : '图片请求未完成：可能为网络/CORS、附件下载或响应中断';
       const error = new Error(detail + '；请求ID ' + requestId + '；阶段 ' + stage + '；耗时 ' + ((Date.now()-started)/1000).toFixed(1) + '秒。状态可能不确定，请核对服务端日志，勿盲目重试以免重复扣费');
@@ -88,10 +91,43 @@
     }
   }
 
-  async function write({table, base, fid, rid, result, signal, append = false}, fetcher = fetch) {
+  function checkCropSupport(runtime = root) {
+    if(typeof runtime.createImageBitmap!=='function')throw Error('当前浏览器不支持 createImageBitmap，无法自动裁切，请更换浏览器或取消勾选');
+    let canvas,ctx;
+    try{canvas=runtime.document.createElement('canvas');ctx=canvas.getContext('2d');}catch{}
+    if(!ctx || typeof canvas?.toBlob!=='function')throw Error('当前浏览器 Canvas 2D 或 toBlob 不可用，无法自动裁切，请取消勾选');
+    return {canvas,ctx};
+  }
+  async function crop2x2(blob, signal, runtime = root) {
+    const {canvas,ctx}=checkCropSupport(runtime);
+    let bitmap;
+    const stopped=()=>{if(signal?.aborted)throw new DOMException('裁切已停止；请保存原始拼版图，勿重复生图','AbortError');};
+    try {
+      stopped();
+      try{bitmap=await runtime.createImageBitmap(blob,{imageOrientation:'none',premultiplyAlpha:'none',colorSpaceConversion:'none'});}
+      catch{throw Error('无法解码原始拼版图，未裁切；请下载原图，勿重复调用付费API');}
+      const {width,height}=bitmap;
+      if(width!==height)throw Error('原始图片为 '+width+'×'+height+'，不是正方形，未裁切或拉伸；请下载原图');
+      if(!Number.isSafeInteger(width) || width<2 || width%2)throw Error('原始图片边长须为大于等于2的偶数，才能无损等分四张；请下载原图');
+      const side=width/2;canvas.width=side;canvas.height=side;ctx.imageSmoothingEnabled=false;
+      const images=[];
+      for(const [x,y] of [[0,0],[side,0],[0,side],[side,side]]){
+        stopped();
+        try{ctx.clearRect(0,0,side,side);ctx.drawImage(bitmap,x,y,side,side,0,0,side,side);}
+        catch{throw Error('Canvas 像素裁切失败，请下载原图恢复；不会重新调用付费API');}
+        let cropped;
+        try{cropped=await new Promise((resolve,reject)=>canvas.toBlob(b=>b?.size?resolve(b):reject(Error('empty canvas result')),'image/png'));}
+        catch{throw Error('Canvas 裁切导出失败，原始拼版图可下载；不会自动重新生图');}
+        images.push(cropped);
+      }
+      stopped();return images;
+    } finally {bitmap?.close?.();canvas.width=0;canvas.height=0;}
+  }
+  async function write({table, base, fid, rid, result, signal, append = false, onOriginal = () => {}}, fetcher = fetch) {
     const images = result.images || [result];
     if (!images.length || images.length > 10) throw Error('返回的图片数量无效');
-    const files = [];
+    const files = [], originals=[];
+    const makeFile=(blob,index,cropped=false)=>new File([blob], (cropped?'主图'+String(index+1).padStart(2,'0')+'_':'ai_') + rid.slice(-6) + '_' + Date.now() + '_' + (index+1) + '.' + MIME[blob.type], {type:blob.type});
     for (const [i, image] of images.entries()) {
       let response;
       if (image.b64) {
@@ -100,7 +136,13 @@
         response = new Response(bytes, {headers:{'Content-Type':'image/png'}});
       } else response = await fetcher(image.url, {signal});
       const blob = await imageBlob(response);
-      files.push(new File([blob], 'ai_' + rid.slice(-6) + '_' + Date.now() + '_' + (i+1) + '.' + MIME[blob.type], {type:blob.type}));
+      if(result.autoCrop2x2){originals.push(blob);await onOriginal(blob);}
+      else files.push(makeFile(blob,i));
+    }
+    if(result.autoCrop2x2){
+      if(originals.length!==1)throw Error('裁切模式预期1张拼版图，实际返回'+originals.length+'张；原图已保留供下载，未自动重试');
+      const cropped=await crop2x2(originals[0],signal);
+      files.push(...cropped.map((blob,i)=>makeFile(blob,i,true)));
     }
     if (signal?.aborted) throw new DOMException('已停止', 'AbortError');
     const tokens = await base.batchUploadFile(files);
@@ -111,6 +153,6 @@
     await table.setCellValue(fid, rid, [...(existing || []), ...files.map((file,i)=>({name:file.name, size:file.size, type:file.type, token:tokens[i], timeStamp:file.lastModified}))]);
     return files.reduce((sum,file)=>sum+file.size,0);
   }
-  const api = {endpoint, isImage, attachmentUrls, imageBlob, generate, write};
+  const api = {checkCropSupport, crop2x2, endpoint, isImage, attachmentUrls, imageBlob, generate, write};
   if (typeof module !== 'undefined') module.exports = api; else root.ImageAPI = api;
 })(globalThis);

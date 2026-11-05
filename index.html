@@ -131,6 +131,13 @@
   <div id="imageExtras" style="display:none">
     <label>生成数量（一次请求返回多张，数量越多费用越高）</label>
     <select id="imageCount"><option value="1">1 张</option><option value="2">2 张</option><option value="3">3 张</option><option value="4">4 张</option><option value="5">5 张</option><option value="6">6 张</option><option value="7">7 张</option><option value="8">8 张</option><option value="9">9 张</option><option value="10">10 张</option></select>
+    <label><input id="autoCrop2x2" type="checkbox" style="width:auto"> 生成后自动裁切为4张主图（2×2）</label>
+    <div class="hint">裁切模式只生成1张正方形图，建议2880×2880。请在现有Prompt中明确要求等分、无边框、无间隔的2×2拼版；裁切不会修改Prompt或重绘商品。</div>
+    <div id="cropOriginals" class="hint" hidden>
+      <p>已付费拼版原图下载（仅当前页面有效，请在关闭或刷新前保存）：</p>
+      <div id="cropOriginalLinks"></div>
+      <button id="clearCropOriginals" type="button">清除下载链接（释放内存）</button>
+    </div>
     <div class="row"><div><label>宽度（像素）</label><input id="imageWidth" type="number" min="16" max="3840" step="16" value="1024"></div><div><label>高度（像素）</label><input id="imageHeight" type="number" min="16" max="3840" step="16" value="1024"></div></div>
     <div class="hint">宽高为16的倍数，比例1:3～3:1，最长边3840，总像素655360～8294400。图片模式保留旧附件并追加新结果；大批量请降低行并发。</div>
     <label>选择 Prompt 模板</label><select id="templateSelect"></select>
@@ -549,6 +556,7 @@ const saveCfg = () => {
     inputs: [...document.querySelectorAll('.chip.on')].map(c => c.textContent),
     output: $('outputSel').value, concurrency: $('concurrency').value, maxRows: $('maxRows').value, imgSize: $('imgSize').value,
     imageCount: $('imageCount').value, imageWidth: $('imageWidth').value, imageHeight: $('imageHeight').value, imageTemplate: $('templateSelect').value,
+    autoCrop2x2: $('autoCrop2x2').checked, imageCountBeforeCrop: $('autoCrop2x2').dataset.normalCount || $('imageCount').value,
     taskType: $('taskType').value, taskCol: $('taskCol').value,
     vidApiKind: $('vidApiKind').value, vidApiBase: $('vidApiBase').value, vidApiKey: $('vidApiKey').value,
     vidModel: $('vidModel').value, vidDur: $('vidDur').value, vidRes: $('vidRes').value, vidRatio: $('vidRatio').value, vidImgMode: $('vidImgMode').value,
@@ -794,7 +802,8 @@ async function callImage(input, signal) {
     onProgress: d => log('图片请求 ' + d.request_id + ' · ' + d.stage + ' · ' + (d.elapsed_ms / 1000).toFixed(1) + '秒') }, signal);
 }
 async function writeImage(fid, rid, result, signal) {
-  return ImageAPI.write({table, base: bitable.base, fid, rid, result, signal, append:true});
+  return ImageAPI.write({table, base: bitable.base, fid, rid, result, signal, append:true,
+    onOriginal: blob => imageOptions.keepOriginal(blob, rid)});
 }
 
 // ══════════ 🎬 视频生成(全行业都是异步任务制:提交→轮询→取片) ══════════
@@ -1067,11 +1076,13 @@ async function processRecords(recordIds) {
             const sz = await writeImage(outFid, rid, res, ac.signal);
             if (res.images.length !== res.expectedCount) log('上游返回 ' + res.images.length + '/' + res.expectedCount + ' 张，有效图片已保留；不自动重试以免重复扣费', 1);
             done++;
-            log('✅ 行' + rid.slice(-6) + ' 出图完成(' + res.images.length + '张·' + (res.edit ? '图生图' : '文生图') + '·' + Math.round(sz / 1024) + 'KB)');
+            if (res.autoCrop2x2) log('✅ 行' + rid.slice(-6) + ' 已生成1张拼版图，成功裁切4张并回写飞书');
+            else log('✅ 行' + rid.slice(-6) + ' 出图完成(' + res.images.length + '张·' + (res.edit ? '图生图' : '文生图') + '·' + Math.round(sz / 1024) + 'KB)');
           }
         } finally { clearTimeout(timer); aborters.delete(ac); }
       } catch (e) {
         fail++;
+        if(isImageMode() && imageRunOptions?.autoCrop2x2)$('imageError').textContent=e.message;
         log('行' + rid.slice(-6) + ' ' + e.message, 1);
       }
     }
