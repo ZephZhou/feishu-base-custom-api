@@ -50,17 +50,31 @@
       $('templateName').value=templates.find(t=>t.id===id)?.name || '';
     };
     drawTemplates(cfg.imageTemplate ?? '');
-    $('imageCount').value=cfg.imageCount ?? 4;
+    const crop=$('autoCrop2x2'), count=$('imageCount');
+    crop.checked=cfg.autoCrop2x2 === true;
+    crop.dataset.normalCount=String((crop.checked ? cfg.imageCountBeforeCrop : cfg.imageCount) || cfg.imageCount || 4);
+    const setCount=value=>{crop.dataset.normalCount=String(value);count.value=crop.checked?'1':String(value);count.disabled=crop.checked;};
+    setCount(crop.dataset.normalCount);
+    crop.onchange=()=>{
+      if(crop.checked){crop.dataset.normalCount=count.value;count.value='1';count.disabled=true;}
+      else {count.disabled=false;count.value=crop.dataset.normalCount || '4';}
+      validate();saveCfg();
+    };
     $('imageWidth').value=cfg.imageWidth ?? (cfg.imgSize || '1024x1024').split('x')[0];
     $('imageHeight').value=cfg.imageHeight ?? (cfg.imgSize || '1024x1024').split('x')[1];
     if (!cfg.imgSize) $('imgSize').value='1024x1024';
     if (cfg.imgSize==='custom') { $('imageWidth').value=cfg.imageWidth || 1024; $('imageHeight').value=cfg.imageHeight || 1024; }
-    const current=()=>rules.checkResultBudget($('imageWidth').value+'x'+$('imageHeight').value,$('imageCount').value);
+    const current=()=>{
+      const value=rules.checkResultBudget($('imageWidth').value+'x'+$('imageHeight').value,crop.checked?1:count.value);
+      if(crop.checked && value.width!==value.height)throw Error('自动裁切模式只接受正方形图片，请将宽高设为相同值，建议2880×2880');
+      return {...value,autoCrop2x2:crop.checked};
+    };
     function validate() {try{current();setError('');return true;}catch(e){setError(e.message);return false;}}
     select.onchange=()=>show(()=>{
       const t=templates.find(t=>t.id===select.value);$('templateName').value=t?.name || '';
-      if(t){$('prompt').value=t.prompt;$('imageCount').value=t.n;const [w,h]=t.size.split('x');$('imageWidth').value=w;$('imageHeight').value=h;$('imgSize').value=[...$('imgSize').options].some(o=>o.value===t.size)?t.size:'custom';}
+      if(t){$('prompt').value=t.prompt;setCount(t.n);const [w,h]=t.size.split('x');$('imageWidth').value=w;$('imageHeight').value=h;$('imgSize').value=[...$('imgSize').options].some(o=>o.value===t.size)?t.size:'custom';}
     });
+    select.addEventListener('change',validate);
     $('saveTemplate').onclick=()=>show(()=>{
       const v=current(), name=$('templateName').value.trim();if(!name)throw Error('请填写模板名称');
       const t={id:select.value || crypto.randomUUID(),name,prompt:$('prompt').value,n:v.n,size:v.size};
@@ -77,7 +91,7 @@
       const next=templates.filter(t=>t.id!==select.value);saveTemplates(localStorage,next);templates=next;drawTemplates();
     });
     $('imgSize').addEventListener('change',()=>{if($('imgSize').value!=='custom'){const [w,h]=$('imgSize').value.split('x');$('imageWidth').value=w;$('imageHeight').value=h;}validate();saveCfg();});
-    ['imageWidth','imageHeight','imageCount'].forEach(id=>$(id).addEventListener('input',()=>{if(id!=='imageCount')$('imgSize').value='custom';validate();saveCfg();}));
+    ['imageWidth','imageHeight','imageCount'].forEach(id=>$(id).addEventListener('input',()=>{if(id!=='imageCount')$('imgSize').value='custom';else if(crop.checked)count.value='1';else crop.dataset.normalCount=count.value;validate();saveCfg();}));
     const brandImages=Array(4).fill(null), previews=Array(4).fill(null); let pending=0, storageReady=true;
     const drawSlot=(index,blob)=>{
       if(previews[index])URL.revokeObjectURL(previews[index]);
@@ -98,9 +112,18 @@
       };
       remove.onclick=async()=>{pending++;input.disabled=remove.disabled=true;try{await slot('delete',i);drawSlot(i,null);setError('');}catch(e){setError(e.message);}finally{pending--;input.disabled=remove.disabled=false;}};
     }
+    const originals=[];
+    $('clearCropOriginals').onclick=()=>{originals.forEach(url=>URL.revokeObjectURL(url));originals.length=0;$('cropOriginalLinks').replaceChildren();$('cropOriginals').hidden=true;};
+    const keepOriginal=(blob,rid)=>{
+      const url=URL.createObjectURL(blob);originals.push(url);
+      const link=document.createElement('a');link.href=url;link.download='拼版原图_'+rid.slice(-6)+'_'+Date.now()+'.'+({'image/jpeg':'jpg','image/webp':'webp'}[blob.type] || 'png');
+      link.textContent='下载拼版原图（行 '+rid.slice(-6)+'）';link.style.display='block';
+      $('cropOriginalLinks').append(link);$('cropOriginals').hidden=false;
+    };
     return {
+      keepOriginal,
       validate,
-      snapshot:()=>{if(pending)throw Error('品牌图正在保存，请稍后生成');if(!storageReady)throw Error('品牌图读取失败，已停止生成以免遗漏参考图；请恢复浏览器存储权限后刷新');return {...current(),brandImages:brandImages.filter(Boolean)};}
+      snapshot:()=>{if(pending)throw Error('品牌图正在保存，请稍后生成');if(!storageReady)throw Error('品牌图读取失败，已停止生成以免遗漏参考图；请恢复浏览器存储权限后刷新');const value=current();if(value.autoCrop2x2)root.ImageAPI.checkCropSupport();return {...value,brandImages:brandImages.filter(Boolean)};}
     };
   }
   const api={defaults,loadTemplates,saveTemplates,TEMPLATE_KEY,init};
