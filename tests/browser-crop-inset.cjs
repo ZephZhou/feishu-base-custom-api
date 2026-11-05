@@ -13,7 +13,7 @@ const {chromium}=require('playwright');const path=require('node:path');const ass
     const positions=[[0,0],[side,0],[0,side],[side,side]],colors=['#ff0000','#00ff00','#0000ff','#ffff00'];
     positions.forEach(([x,y],i)=>{
      ctx.fillStyle=kind==='opaque-white'?'white':colors[i];ctx.fillRect(x,y,side,side);
-     const edge=kind==='black-frame'?2:6;
+     const edge=kind==='black-frame'?16:28;
      const edges=[[x,y,side,edge],[x,y,edge,side],[x+side-edge,y,edge,side],[x,y+side-edge,side,edge]];
      if(kind==='black-frame'){
       ctx.fillStyle='black';edges.forEach(rect=>ctx.fillRect(...rect));
@@ -26,7 +26,7 @@ const {chromium}=require('playwright');const path=require('node:path');const ass
     });
     const blob=await new Promise(r=>c.toBlob(r,'image/png'));reports[kind]={};
     // inset=0 reproduces the prior 1:1 crop and PNG export path for root-cause control.
-    for(const inset of [0,4]){
+    for(const inset of [0,4,24]){
      const parts=await ImageAPI.crop2x2(blob,undefined,globalThis,inset),outSide=side-2*inset;
      const exact=[],blackEdges=[],alphaEdges=[],dimensions=[];
      for(let i=0;i<4;i++){
@@ -48,12 +48,12 @@ const {chromium}=require('playwright');const path=require('node:path');const ass
    return reports;
   });
   for(const report of Object.values(results))for(const test of Object.values(report))assert.deepEqual(test.exact,[true,true,true,true]);
-  const bordered=results['black-frame'];assert.ok(bordered[0].blackEdges.every(n=>n>0));assert.deepEqual(bordered[4].blackEdges,[0,0,0,0]);assert.deepEqual(bordered[4].dimensions,Array.from({length:4},()=>[1432,1432]));
-  for(const kind of ['opaque-white','transparent','semi-transparent'])for(const inset of [0,4])assert.deepEqual(results[kind][inset].blackEdges,[0,0,0,0]);
-  for(const inset of [0,4]){
+  const bordered=results['black-frame'];assert.ok(bordered[0].blackEdges.every(n=>n>0));assert.ok(bordered[4].blackEdges.every(n=>n>0));assert.deepEqual(bordered[24].blackEdges,[0,0,0,0]);assert.deepEqual(bordered[24].dimensions,Array.from({length:4},()=>[1392,1392]));
+  for(const kind of ['opaque-white','transparent','semi-transparent'])for(const inset of [0,4,24])assert.deepEqual(results[kind][inset].blackEdges,[0,0,0,0]);
+  for(const inset of [0,4,24]){
    assert.ok(results.transparent[inset].alphaEdges.every(n=>n.transparent>0&&n.semi===0));
    assert.ok(results['semi-transparent'][inset].alphaEdges.every(n=>n.semi>0&&n.transparent===0));
   }
-  console.log('PASS black-border diagnostics: original and inset Canvas/PNG paths preserve source RGBA, transparent/semi-transparent edges never become opaque black; per-quadrant 4px inset removes all simulated outer AND center 2px frames; 4×1432, no resize or API calls');
+  console.log('PASS black-border diagnostics: original and inset Canvas/PNG paths preserve source RGBA, transparent/semi-transparent edges never become opaque black; per-quadrant 24px inset removes all simulated outer AND center 16px frames that remain at 4px; 4×1392, no resize or API calls');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -42,7 +42,7 @@ const {chromium}=require('playwright');const http=require('node:http');const fs=
    const matching=[],sizes=[];
    for(let i=0;i<parts.length;i++){
     const bitmap=await createImageBitmap(parts[i]);sizes.push([bitmap.width,bitmap.height]);const c=document.createElement('canvas');c.width=bitmap.width;c.height=bitmap.height;const cctx=c.getContext('2d');cctx.drawImage(bitmap,0,0);bitmap.close();
-    const actual=cctx.getImageData(0,0,1432,1432).data,expected=ctx.getImageData(offsets[i][0]+4,offsets[i][1]+4,1432,1432).data;
+    const actual=cctx.getImageData(0,0,1392,1392).data,expected=ctx.getImageData(offsets[i][0]+24,offsets[i][1]+24,1392,1392).data;
     matching.push(actual.every((value,j)=>value===expected[j]));
    }
    // A smaller real return proves split dimensions come from decoded pixels.
@@ -51,7 +51,7 @@ const {chromium}=require('playwright');const http=require('node:http');const fs=
    return {sizes,matching,smallSize,sheet:source.toDataURL('image/png').split(',')[1]};
   });
   sheet=checks.sheet;
-  tinyPNG=Buffer.from(await page.evaluate(()=>{const c=document.createElement('canvas');c.width=c.height=16;c.getContext('2d').fillRect(0,0,16,16);return c.toDataURL('image/png').split(',')[1];}),'base64');assert.deepEqual(checks.sizes,Array.from({length:4},()=>[1432,1432]));assert.deepEqual(checks.matching,[true,true,true,true]);assert.deepEqual(checks.smallSize,[792,792]);
+  tinyPNG=Buffer.from(await page.evaluate(()=>{const c=document.createElement('canvas');c.width=c.height=16;c.getContext('2d').fillRect(0,0,16,16);return c.toDataURL('image/png').split(',')[1];}),'base64');assert.deepEqual(checks.sizes,Array.from({length:4},()=>[1392,1392]));assert.deepEqual(checks.matching,[true,true,true,true]);assert.deepEqual(checks.smallSize,[752,752]);
   await page.selectOption('#imageCount','7');await page.check('#autoCrop2x2');assert.equal(await page.inputValue('#imageCount'),'1');assert.equal(await page.isDisabled('#imageCount'),true);
   await page.fill('#imageWidth','2880');await page.fill('#imageHeight','2880');await page.reload();await ready();assert.equal(await page.isChecked('#autoCrop2x2'),true);assert.equal(await page.inputValue('#imageCount'),'1');assert.equal(await page.isDisabled('#imageCount'),true);
   await page.uncheck('#autoCrop2x2');assert.equal(await page.inputValue('#imageCount'),'7');assert.equal(await page.isDisabled('#imageCount'),false);
@@ -61,7 +61,7 @@ const {chromium}=require('playwright');const http=require('node:http');const fs=
   await page.fill('#imageWidth','2880');await page.fill('#imageHeight','2880');
   for(let i=0;i<4;i++){await page.setInputFiles('#brandFile'+i,{name:'brand-'+i+'.png',mimeType:'image/png',buffer:tinyPNG});await page.waitForFunction(i=>!document.getElementById('brandFile'+i).disabled,i);}
   const finished=()=>page.waitForFunction(()=>!document.getElementById('runBtn').classList.contains('stop'));
-  await page.click('#runBtn');await page.waitForFunction(()=>window.writes.length===1);await finished();assert.equal(posts,1);assert.deepEqual(await page.evaluate(()=>window.uploads[0].map(v=>v.slice(0,2))),Array.from({length:4},()=>[1432,1432]));
+  await page.click('#runBtn');await page.waitForFunction(()=>window.writes.length===1);await finished();assert.equal(posts,1);assert.deepEqual(await page.evaluate(()=>window.uploads[0].map(v=>v.slice(0,2))),Array.from({length:4},()=>[1392,1392]));
   const filenames=await page.evaluate(()=>window.uploads[0].map(v=>v[2]));filenames.forEach((name,i)=>assert.ok(name.startsWith('主图0'+(i+1)+'_')));
   assert.equal(await page.evaluate(()=>window.writes[0][2].length),5);assert.equal(await page.evaluate(()=>window.writes[0][2][0].token),'old-result');assert.ok((await page.locator('#log').textContent()).includes('已生成1张拼版图，成功裁切4张并回写飞书'));
   const downloadEvent=page.waitForEvent('download');await page.locator('#cropOriginalLinks a').first().click();const download=await downloadEvent;assert.ok(fs.readFileSync(await download.path()).equals(Buffer.from(sheet,'base64')));
@@ -74,6 +74,6 @@ const {chromium}=require('playwright');const http=require('node:http');const fs=
   // Upload failure preserves all old attachments and leaves the paid original link.
   mode='square';await page.evaluate(()=>window.failUpload=true);await page.click('#runBtn');await page.waitForFunction(()=>document.getElementById('log').textContent.includes('未返回全部附件 token'));await finished();assert.equal(posts,5);assert.equal(await page.evaluate(()=>window.writes.length),2);assert.equal(await page.evaluate(()=>window.attachments.length),9);assert.equal(await page.locator('#cropOriginalLinks a').count(),4);
   await page.click('#clearCropOriginals');assert.equal(await page.locator('#cropOriginalLinks a').count(),0);assert.equal(await page.locator('#cropOriginals').isVisible(),false);assert.deepEqual(errors,[]);
-  console.log('PASS crop browser: exact pixel/Logo/color/transparency preservation, 2880→4×1432 and 1600→4×792, ordered file upload, checkbox persistence/n=1, normal multi-image restore, recoverable failures, original download; no paid API');
+  console.log('PASS crop browser: exact pixel/Logo/color/transparency preservation, 2880→4×1392 and 1600→4×752, ordered file upload, checkbox persistence/n=1, normal multi-image restore, recoverable failures, original download; no paid API');
  }finally{if(browser)await browser.close();await new Promise(r=>server.close(r));}
 })().catch(e=>{console.error(e);process.exitCode=1;});
