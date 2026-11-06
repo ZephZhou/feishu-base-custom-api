@@ -3,18 +3,18 @@
   const rules = typeof module !== 'undefined' ? require('./server/image-rules.js') : root.ImageRules;
   const TEMPLATE_KEY = 'ai-filler-image-templates-v1';
   function defaults() { return [
-    {id:'main', name:'主图模板', prompt:'以第一张商品白底图为商品主体，后续图片仅作为品牌风格参考。保持商品外形、颜色、商标及包装文字，生成简洁真实的电商主图场景，不添加水印。', n:4, size:'1024x1024'},
-    {id:'detail', name:'详情页模板', prompt:'以第一张商品白底图为商品主体，后续图片仅作为品牌风格参考。保持商品一致，生成展示产品细节与使用场景的电商详情页图片，不虚构产品功能，不添加水印。', n:3, size:'1024x1536'}
+    {id:'main', name:'主图模板', prompt:'以第一张商品白底图为商品主体，后续图片仅作为品牌风格参考。保持商品外形、颜色、商标及包装文字，生成简洁真实的电商主图场景，不添加水印。', n:4, size:'1024x1024', autoCrop2x2:false},
+    {id:'detail', name:'详情页模板', prompt:'以第一张商品白底图为商品主体，后续图片仅作为品牌风格参考。保持商品一致，生成展示产品细节与使用场景的电商详情页图片，不虚构产品功能，不添加水印。', n:3, size:'1024x1536', autoCrop2x2:false}
   ]; }
   function loadTemplates(storage) {
     const saved = storage.getItem(TEMPLATE_KEY);
     const templates = saved === null ? defaults() : JSON.parse(saved);
     if (!Array.isArray(templates) || templates.some(t=>!t || typeof t.id!=='string' || typeof t.name!=='string' || typeof t.prompt!=='string')) throw Error('模板数据格式不正确');
-    templates.forEach(t=>rules.validate(t.size,t.n));
+    templates.forEach(t=>{ rules.validate(t.size,t.n); if (t.autoCrop2x2 !== undefined && typeof t.autoCrop2x2 !== 'boolean') throw Error('模板自动裁切字段格式错误'); });
     return templates;
   }
   function saveTemplates(storage, templates) {
-    templates.forEach(t => { if (!t.name.trim() || t.name.length > 100) throw Error('模板名称须为 1～100 个字符'); rules.validate(t.size,t.n); });
+    templates.forEach(t => { if (!t.name.trim() || t.name.length > 100) throw Error('模板名称须为 1～100 个字符'); const v=rules.validate(t.size,t.n); if (typeof t.autoCrop2x2 !== 'boolean') throw Error('模板自动裁切状态须为布尔值'); if (t.autoCrop2x2 && (v.n !== 1 || v.width !== v.height)) throw Error('自动裁切模板需要 n=1 和正方形图片'); });
     storage.setItem(TEMPLATE_KEY, JSON.stringify(templates));
   }
   let database;
@@ -72,12 +72,12 @@
     function validate() {try{current();setError('');return true;}catch(e){setError(e.message);return false;}}
     select.onchange=()=>show(()=>{
       const t=templates.find(t=>t.id===select.value);$('templateName').value=t?.name || '';
-      if(t){$('prompt').value=t.prompt;setCount(t.n);const [w,h]=t.size.split('x');$('imageWidth').value=w;$('imageHeight').value=h;$('imgSize').value=[...$('imgSize').options].some(o=>o.value===t.size)?t.size:'custom';}
+      if(t){$('prompt').value=t.prompt;crop.checked=t.autoCrop2x2 === true;setCount(t.n);const [w,h]=t.size.split('x');$('imageWidth').value=w;$('imageHeight').value=h;$('imgSize').value=[...$('imgSize').options].some(o=>o.value===t.size)?t.size:'custom';validate();}
     });
     select.addEventListener('change',validate);
     $('saveTemplate').onclick=()=>show(()=>{
       const v=current(), name=$('templateName').value.trim();if(!name)throw Error('请填写模板名称');
-      const t={id:select.value || crypto.randomUUID(),name,prompt:$('prompt').value,n:v.n,size:v.size};
+      const t={id:select.value || crypto.randomUUID(),name,prompt:$('prompt').value,n:v.n,size:v.size,autoCrop2x2:crop.checked};
       const next=templates.some(x=>x.id===t.id)?templates.map(x=>x.id===t.id?t:x):[...templates,t];
       saveTemplates(localStorage,next);templates=next;drawTemplates(t.id);
     });
