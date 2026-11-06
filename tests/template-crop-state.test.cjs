@@ -20,7 +20,7 @@ test('legacy main/detail templates migrate without clearing their prompts', () =
   const old = opts.loadTemplates(storage);
   assert.equal(old[0].autoCrop2x2, false);
   assert.equal(old[1].autoCrop2x2, false);
-  const updated = old.map(t=>t.id==='main'?{...t,autoCrop2x2:true}:t);
+  const updated = old.map(t=>t.id==='main'?{...t,generationMode:'crop_2x2',autoCrop2x2:true}:t);
   assert.doesNotThrow(()=>opts.saveTemplates(storage,updated));
   const restored = opts.loadTemplates(storage);
   assert.equal(restored.find(t=>t.id==='main').autoCrop2x2,true);
@@ -36,9 +36,11 @@ test('old saved template without checkbox can still be saved directly', () => {
   assert.equal(opts.loadTemplates(storage)[0].autoCrop2x2,false);
 });
 
-test('cropping only allowed for one square input, other templates unchanged', () => {
+test('legacy rectangular crop drafts remain editable, but cannot be submitted', () => {
   const storage=mockStorage();
-  assert.throws(()=>opts.saveTemplates(storage,[{id:'x',name:'详情图',prompt:'x',n:3,size:'1024x1536',autoCrop2x2:true}]),/n=1/);
+  opts.saveTemplates(storage,[{id:'x',name:'详情图',prompt:'x',n:3,size:'1024x1536',autoCrop2x2:true}]);
+  const draft=opts.loadTemplates(storage)[0];assert.equal(draft.prompt,'x');assert.equal(draft.size,'1024x1536');
+  assert.throws(()=>require('../server/image-rules.js').generationOptions(draft.size,draft.n,draft.generationMode),/正方形/);
   assert.doesNotThrow(()=>opts.saveTemplates(storage,[{id:'x',name:'详情图',prompt:'x',n:3,size:'1024x1536',autoCrop2x2:false}]));
 });
 

@@ -30,7 +30,7 @@ const {chromium}=require('playwright');const http=require('node:http');const fs=
    return route.fulfill({json:{data:[{b64_json:data}]}});
   });
   const url='http://127.0.0.1:'+server.address().port;
-  const ready=async()=>{await page.locator('.chip').first().waitFor();await page.evaluate(()=>window.nativeBitmap=createImageBitmap);};
+  const ready=async()=>{await page.locator('.chip').first().waitFor();await page.evaluate(()=>{window.nativeBitmap=createImageBitmap;document.getElementById('imageAdvanced').open=true;});};
   await page.goto(url);await ready();await page.selectOption('#taskType','image');assert.equal(await page.isChecked('#autoCrop2x2'),false);
   // Generate a real simulated 2880px sheet with distinct quadrants, text and transparency.
   const checks=await page.evaluate(async()=>{
@@ -52,10 +52,10 @@ const {chromium}=require('playwright');const http=require('node:http');const fs=
   });
   sheet=checks.sheet;
   tinyPNG=Buffer.from(await page.evaluate(()=>{const c=document.createElement('canvas');c.width=c.height=16;c.getContext('2d').fillRect(0,0,16,16);return c.toDataURL('image/png').split(',')[1];}),'base64');assert.deepEqual(checks.sizes,Array.from({length:4},()=>[1392,1392]));assert.deepEqual(checks.matching,[true,true,true,true]);assert.deepEqual(checks.smallSize,[752,752]);
-  await page.selectOption('#imageCount','7');await page.check('#autoCrop2x2');assert.equal(await page.inputValue('#imageCount'),'1');assert.equal(await page.isDisabled('#imageCount'),true);
+  await page.selectOption('#imageCount','7');await page.selectOption('#generationMode','crop_2x2');assert.equal(await page.inputValue('#imageCount'),'1');assert.equal(await page.isDisabled('#imageCount'),true);
   await page.fill('#imageWidth','2880');await page.fill('#imageHeight','2880');await page.reload();await ready();assert.equal(await page.isChecked('#autoCrop2x2'),true);assert.equal(await page.inputValue('#imageCount'),'1');assert.equal(await page.isDisabled('#imageCount'),true);
-  await page.uncheck('#autoCrop2x2');assert.equal(await page.inputValue('#imageCount'),'7');assert.equal(await page.isDisabled('#imageCount'),false);
-  await page.check('#autoCrop2x2');await page.selectOption('#templateSelect','detail');assert.equal(await page.inputValue('#imageCount'),'1');assert.equal(await page.isDisabled('#imageCount'),true);
+  await page.selectOption('#generationMode','standard');assert.equal(await page.inputValue('#imageCount'),'7');assert.equal(await page.isDisabled('#imageCount'),false);
+  await page.selectOption('#generationMode','crop_2x2');await page.selectOption('#templateSelect','detail');await page.selectOption('#generationMode','crop_2x2');assert.equal(await page.inputValue('#imageCount'),'1');assert.equal(await page.isDisabled('#imageCount'),true);
   await page.locator('.chip').filter({hasText:'白底图'}).click();await page.selectOption('#outputSel','main');await page.selectOption('#skipMode','overwrite');await page.fill('#apiBase','https://mock-api.test/v1');await page.fill('#apiKey','fake-proxy-token');await page.fill('#prompt','现有Prompt：正方形、无边框无间隔的2×2商品拼版');
   await page.click('#runBtn');assert.match(await page.locator('#imageError').textContent(),/正方形/);assert.equal(posts,0);
   await page.fill('#imageWidth','2880');await page.fill('#imageHeight','2880');
@@ -63,12 +63,12 @@ const {chromium}=require('playwright');const http=require('node:http');const fs=
   const finished=()=>page.waitForFunction(()=>!document.getElementById('runBtn').classList.contains('stop'));
   await page.click('#runBtn');await page.waitForFunction(()=>window.writes.length===1);await finished();assert.equal(posts,1);assert.deepEqual(await page.evaluate(()=>window.uploads[0].map(v=>v.slice(0,2))),Array.from({length:4},()=>[1392,1392]));
   const filenames=await page.evaluate(()=>window.uploads[0].map(v=>v[2]));filenames.forEach((name,i)=>assert.ok(name.startsWith('主图0'+(i+1)+'_')));
-  assert.equal(await page.evaluate(()=>window.writes[0][2].length),5);assert.equal(await page.evaluate(()=>window.writes[0][2][0].token),'old-result');assert.ok((await page.locator('#log').textContent()).includes('已生成1张拼版图，成功裁切4张并回写飞书'));
+  assert.equal(await page.evaluate(()=>window.writes[0][2].length),5);assert.equal(await page.evaluate(()=>window.writes[0][2][0].token),'old-result');assert.ok((await page.locator('#log').textContent()).includes('API生成1张，裁切4张，上传4张'));
   const downloadEvent=page.waitForEvent('download');await page.locator('#cropOriginalLinks a').first().click();const download=await downloadEvent;assert.ok(fs.readFileSync(await download.path()).equals(Buffer.from(sheet,'base64')));
   // Unchecking restores ordinary multi-image generation and appends all four new results.
-  await page.uncheck('#autoCrop2x2');assert.equal(await page.inputValue('#imageCount'),'3');await page.selectOption('#imageCount','4');await page.selectOption('#imgSize','1024x1024');mode='normal';await page.click('#runBtn');await finished();assert.equal(await page.evaluate(()=>window.writes.length),2,(await page.locator('#log').textContent())+'; UI error: '+await page.locator('#imageError').textContent());assert.equal(posts,2);assert.equal(await page.evaluate(()=>window.attachments.length),9);
+  await page.selectOption('#generationMode','standard');assert.equal(await page.inputValue('#imageCount'),'7');await page.selectOption('#imageCount','4');await page.selectOption('#imgSize','1024x1024');mode='normal';await page.click('#runBtn');await finished();assert.equal(await page.evaluate(()=>window.writes.length),2,(await page.locator('#log').textContent())+'; UI error: '+await page.locator('#imageError').textContent());assert.equal(posts,2);assert.equal(await page.evaluate(()=>window.attachments.length),9);
   // A non-square actual API return is rejected without overwriting or automatic paid retries.
-  await page.check('#autoCrop2x2');await page.fill('#imageWidth','2880');await page.fill('#imageHeight','2880');mode='rectangle';await page.click('#runBtn');await page.waitForFunction(()=>document.getElementById('log').textContent.includes('不是正方形'));await finished();assert.equal(posts,3);assert.equal(await page.evaluate(()=>window.writes.length),2);assert.equal(await page.locator('#cropOriginalLinks a').count(),2);
+  await page.selectOption('#generationMode','crop_2x2');await page.fill('#imageWidth','2880');await page.fill('#imageHeight','2880');mode='rectangle';await page.click('#runBtn');await page.waitForFunction(()=>document.getElementById('log').textContent.includes('不是正方形'));await finished();assert.equal(posts,3);assert.equal(await page.evaluate(()=>window.writes.length),2);assert.equal(await page.locator('#cropOriginalLinks a').count(),2);
   // Canvas disappears after preflight; original is still downloadable and no upload occurs.
   mode='no-canvas';await page.click('#runBtn');await page.waitForFunction(()=>document.getElementById('log').textContent.includes('不支持 createImageBitmap'));await finished();assert.equal(posts,4);assert.equal(await page.evaluate(()=>window.uploads.length),2);assert.equal(await page.locator('#cropOriginalLinks a').count(),3);await page.evaluate(()=>window.createImageBitmap=window.nativeBitmap);
   // Upload failure preserves all old attachments and leaves the paid original link.

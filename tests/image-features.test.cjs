@@ -10,8 +10,8 @@ test('official dimension boundaries and count are checked; result budget fails b
 });
 test('defaults and edited/renamed/deleted templates persist, including all deleted',()=>{
  const data=new Map();const storage={getItem:k=>data.has(k)?data.get(k):null,setItem:(k,v)=>data.set(k,v)};
- const templates=options.loadTemplates(storage);assert.deepEqual(templates.map(t=>[t.name,t.n,t.size]),[['主图模板',4,'1024x1024'],['详情页模板',3,'1024x1536']]);
- templates[0]={...templates[0],name:'品牌主图',prompt:'自定义 Prompt',n:2,size:'1536x864'};options.saveTemplates(storage,templates);
+ const templates=options.loadTemplates(storage);assert.deepEqual(templates.map(t=>[t.name,t.n,t.size]),[['主图模板',1,'2880x2880'],['详情页模板',1,'3456x2048']]);
+ templates[0]={...templates[0],name:'品牌主图',prompt:'自定义 Prompt',generationMode:'standard',autoCrop2x2:false,n:2,size:'1536x864'};options.saveTemplates(storage,templates);
  assert.deepEqual(options.loadTemplates(storage),templates);options.saveTemplates(storage,[]);assert.deepEqual(options.loadTemplates(storage),[]);
  assert.throws(()=>options.saveTemplates(storage,[{name:'',size:'1024x1024',n:1}]));assert.deepEqual(options.loadTemplates(storage),[]);
 });
