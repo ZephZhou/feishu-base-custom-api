@@ -9,8 +9,17 @@
   // In-memory migration: never overwrite saved prompts/sizes or infer mode from text/name.
   function normalizeTemplate(template) {
     if (template.generationMode == null && template.autoCrop2x2 !== undefined && typeof template.autoCrop2x2 !== 'boolean') throw Error('模板自动裁切字段格式错误');
+    if (template.outputFieldId != null && typeof template.outputFieldId !== 'string') throw Error('模板输出列配置格式错误');
+    if (template.outputTableId != null && typeof template.outputTableId !== 'string') throw Error('模板所属数据表配置格式错误');
     const mode=rules.generationMode(template.generationMode,template.autoCrop2x2);
     return {...template,generationMode:mode,autoCrop2x2:mode==='crop_2x2',n:mode==='standard'?(template.n ?? 1):1,detailInsetRatio:template.detailInsetRatio ?? 1/64};
+  }
+  // Field IDs belong to a concrete table: never silently target another attachment column.
+  function resolveTemplateOutput(template, currentTableId, fieldIds) {
+    if (!template?.outputFieldId) return {status:'unbound',fieldId:''};
+    if (template.outputTableId && template.outputTableId !== currentTableId) return {status:'wrong_table',fieldId:''};
+    if (!fieldIds.includes(template.outputFieldId)) return {status:'missing',fieldId:''};
+    return {status:'ok',fieldId:template.outputFieldId};
   }
   function validateTemplate(t) {
     if(!t || typeof t.id!=='string' || typeof t.name!=='string' || typeof t.prompt!=='string') throw Error('模板数据格式不正确');
@@ -50,7 +59,7 @@
       tx.oncomplete=()=>resolve(r.result); tx.onabort=tx.onerror=()=>reject(Error('品牌图保存失败，请检查浏览器存储空间；旧图片未替换'));
     });
   }
-  async function init({$, cfg, saveCfg, onError}) {
+  async function init({$, cfg, saveCfg, onError, getTableId = () => null}) {
     let templates;
     try { templates=loadTemplates(localStorage); } catch { templates=[];onError('模板读取失败；为避免覆盖旧数据，请先检查浏览器存储'); }
     const setError=message=>{ $('imageError').textContent=message; };
@@ -62,6 +71,33 @@
       $('templateName').value=templates.find(t=>t.id===id)?.name || '';
     };
     drawTemplates(cfg.imageTemplate ?? '');
+    const outputSelect=$('outputSel'), outputHint=$('templateOutputHint');
+    const restoreOutputForTable=()=>{
+      const t=templates.find(v=>v.id===select.value);
+      if (!getTableId() || !outputSelect.options.length) return;
+      const validFieldIds=[...outputSelect.options].map(o=>o.value).filter(Boolean);
+      const mapping=resolveTemplateOutput(t,getTableId(),validFieldIds);
+      outputHint.classList.toggle('warn', mapping.status==='wrong_table'||mapping.status==='missing');
+      if (mapping.status==='ok') {
+        outputSelect.value=mapping.fieldId;
+        outputHint.textContent='模板已绑定输出列：'+outputSelect.selectedOptions[0].textContent;
+      } else if (t) {
+        outputSelect.value='';
+        outputHint.textContent=mapping.status==='unbound'
+          ? '此模板尚未保存输出列：请选择附件列并点击「保存模板」。'
+          : '原绑定附件列不在当前数据表中；请重新选择并保存，避免误写。';
+      } else {
+        outputHint.textContent='新建模板：请选输出附件列，再与Prompt一起保存。';
+      }
+    };
+    outputSelect.addEventListener('change',()=>{
+      const t=templates.find(v=>v.id===select.value);
+      if (t) {
+        const alreadySaved=t.outputFieldId===outputSelect.value && (!t.outputTableId || t.outputTableId===getTableId());
+        outputHint.classList.remove('warn');
+        outputHint.textContent=alreadySaved?'当前输出列已保存到模板。':'已调整输出列；请点击「保存模板」以便切换后自动恢复。';
+      }
+    });
     const crop=$('autoCrop2x2'), count=$('imageCount'), mode=$('generationMode'), detailInset=$('detailInsetRatio');
     const selected=templates.find(t=>t.id===select.value);
     mode.value=rules.generationMode(cfg.generationMode ?? (cfg.autoCrop2x2===undefined?selected?.generationMode:undefined),cfg.autoCrop2x2);
@@ -92,13 +128,17 @@
         const [w,h]=t.size.split('x');$('imageWidth').value=w;$('imageHeight').value=h;
         $('imgSize').value=[...$('imgSize').options].some(o=>o.value===t.size)?t.size:'custom';
       }
+      restoreOutputForTable();
     });
     select.addEventListener('change',validate);
     $('saveTemplate').onclick=()=>show(()=>{
       const v=current(),name=$('templateName').value.trim();if(!name)throw Error('请填写模板名称');
-      const t={...templates.find(t=>t.id===select.value),id:select.value || crypto.randomUUID(),name,prompt:$('prompt').value,n:v.n,size:v.size,generationMode:v.generationMode,autoCrop2x2:v.autoCrop2x2,detailInsetRatio:v.detailInsetRatio};
+      // A draft may be saved before a destination is picked. Only bind when a
+      // real attachment field is selected; otherwise remind the user at run time.
+      if (outputSelect.value && (![...outputSelect.options].some(o=>o.value===outputSelect.value) || !getTableId())) throw Error('当前输出列不是有效的飞书附件字段');
+      const t={...templates.find(t=>t.id===select.value),id:select.value || crypto.randomUUID(),name,prompt:$('prompt').value,n:v.n,size:v.size,generationMode:v.generationMode,autoCrop2x2:v.autoCrop2x2,detailInsetRatio:v.detailInsetRatio,outputFieldId:outputSelect.value || '',outputTableId:outputSelect.value ? getTableId() : ''};
       const next=templates.some(x=>x.id===t.id)?templates.map(x=>x.id===t.id?t:x):[...templates,t];
-      saveTemplates(localStorage,next);templates=next;drawTemplates(t.id);
+      saveTemplates(localStorage,next);templates=next;drawTemplates(t.id);restoreOutputForTable();
     });
     $('renameTemplate').onclick=()=>show(()=>{
       if(!select.value)throw Error('请先选择要重命名的模板');
@@ -142,9 +182,10 @@
     return {
       keepOriginal,
       validate,
+      restoreOutputForTable,
       snapshot:()=>{if(pending)throw Error('品牌图正在保存，请稍后生成');if(!storageReady)throw Error('品牌图读取失败，已停止生成以免遗漏参考图；请恢复浏览器存储权限后刷新');const value=current();if(value.generationMode!=='standard')root.ImageAPI.checkCropSupport();return {...value,promptTemplate:$('prompt').value,brandImages:brandImages.filter(Boolean)};}
     };
   }
-  const api={defaults,normalizeTemplate,loadTemplates,saveTemplates,TEMPLATE_KEY,init};
+  const api={defaults,normalizeTemplate,resolveTemplateOutput,loadTemplates,saveTemplates,TEMPLATE_KEY,init};
   if(typeof module!=='undefined')module.exports=api;else root.ImageOptions=api;
 })(globalThis);

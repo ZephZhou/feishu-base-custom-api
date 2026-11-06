@@ -27,6 +27,27 @@
   #log { background: #16191d; color: #c9d1d9; border-radius: 6px; padding: 8px; font: 11px/1.5 Menlo, monospace; max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 8px; display: none; }
   .hint { font-size: 11px; color: #8f959e; margin-top: 4px; }
   .err { color: #f54a45; font-size: 12px; }
+  /* Image workflow: template -> prompt -> destination, with optional controls collapsed. */
+  .section-heading {font-weight:700;color:#344054;font-size:12px;margin:14px 0 8px;padding-bottom:5px;border-bottom:1px solid #eef1f5;}
+  .image-panel {background:#f7faff;border:1px solid #dbe7ff;border-radius:9px;padding:11px;margin:10px 0 12px;}
+  .image-panel label {margin-top:7px;}
+  .image-panel .hint {color:#61768f;}
+  #generationSummary {background:#eaf2ff;color:#2457a5;border-radius:6px;padding:7px 9px;font-weight:600;margin:10px 0 0;}
+  .template-actions {display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;}
+  .template-actions button {flex:1;min-width:74px;border:1px solid #d5e0f0;background:#fff;border-radius:6px;color:#344054;cursor:pointer;padding:7px 5px;font-size:12px;}
+  .template-actions #saveTemplate {background:#3370ff;color:#fff;border-color:#3370ff;flex:1.35;}
+  .output-panel {background:#f8fafc;border:1px solid #e3e9f1;border-radius:8px;padding:9px 10px;margin-top:12px;}
+  #templateOutputHint {font-size:11px;margin-top:7px;color:#546b89;}
+  #templateOutputHint.warn {color:#bc651b;}
+  .image-detail {background:#fbfcfe;border:1px solid #e7ebf1;border-radius:8px;margin-top:10px;padding:9px 10px;}
+  .image-detail summary {font-weight:600;color:#344054;cursor:pointer;font-size:12px;}
+  #brandSlots {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;}
+  #brandSlots > div {border:1px solid #e5e9f0;border-radius:8px;padding:7px;min-width:0;background:#fff;}
+  #brandSlots img {display:block;max-width:100%;max-height:100px;object-fit:contain;margin:5px 0;}
+  #brandSlots img[hidden] {display:none;}
+  #brandSlots input[type=file] {max-width:100%;font-size:11px;}
+  #brandSlots button {margin-top:5px;font-size:11px;padding:3px 8px;}
+  @media(max-width:280px){#brandSlots{grid-template-columns:1fr;}}
 </style>
 </head>
 <body>
@@ -112,20 +133,32 @@
     <label>任务ID列（可选，选一个文本列：任务号即时落表，中途关面板也能点「续查」接着拿片）</label>
     <select id="taskCol"></select>
   </div>
+  <div id="imageTemplatePanel" class="image-panel" style="display:none">
+    <div class="section-heading" style="margin-top:0">① 选择图片模板</div>
+    <label>模板</label><select id="templateSelect"></select>
+    <label>模板名称</label><input id="templateName" maxlength="100" placeholder="选择“新建模板”后填写名称">
+    <div class="template-actions"><button id="saveTemplate" type="button">保存模板</button><button id="renameTemplate" type="button">重命名</button><button id="deleteTemplate" type="button">删除</button></div>
+    <div id="generationSummary" role="status" aria-live="polite"></div>
+    <div class="hint">切换模板自动恢复 Prompt、生成方式、尺寸和输出附件列。</div>
+  </div>
+  <div class="section-heading" id="contentSectionHeading">② 商品输入与 Prompt</div>
   <label id="inputLabel">输入列（点选，可多个；📎附件列=发给视觉模型看图写文）</label>
   <div class="chips" id="inputChips"></div>
   <label>提示词模板（用【列名】引用输入列内容）</label>
   <textarea id="prompt" placeholder="例：你是电商专家。产品信息：【基础信息】，目标人群：【目标人群】。请输出……"></textarea>
-  <label id="outputLabel">输出列（生成的文案写这里，选文本列）</label>
-  <select id="outputSel"></select>
+  <div class="output-panel">
+    <div class="section-heading" id="outputSectionHeading" style="margin-top:0">③ 输出到飞书</div>
+    <label id="outputLabel">输出列（生成的文案写这里，选文本列）</label>
+    <select id="outputSel"></select>
+    <div id="templateOutputHint" class="hint" style="display:none" aria-live="polite"></div>
+  </div>
   <div id="imageExtras" style="display:none">
-    <div id="generationSummary" class="hint" role="status" aria-live="polite"></div>
     <div id="cropOriginals" class="hint" hidden>
       <p>已付费拼版原图下载（仅当前页面有效，请在关闭或刷新前保存）：</p>
       <div id="cropOriginalLinks"></div>
       <button id="clearCropOriginals" type="button">清除下载链接（释放内存）</button>
     </div>
-    <details id="imageAdvanced"><summary>高级设置（模板策略、数量和尺寸）</summary>
+    <details id="imageAdvanced" class="image-detail"><summary>高级设置 · 生成策略与图片尺寸</summary>
       <label>模板生成策略</label><select id="generationMode"><option value="standard">标准图片生成</option><option value="crop_2x2">主图2×2拼版</option><option value="crop_3x1">详情3×1拼版</option></select>
       <div id="standardCount">    <label>标准模式生成数量（一次请求，1～10张）</label>
     <select id="imageCount"><option value="1">1 张</option><option value="2">2 张</option><option value="3">3 张</option><option value="4">4 张</option><option value="5">5 张</option><option value="6">6 张</option><option value="7">7 张</option><option value="8">8 张</option><option value="9">9 张</option><option value="10">10 张</option></select></div>
@@ -145,12 +178,10 @@
       <div id="detailInsetRow"><label>详情图安全内缩</label><select id="detailInsetRatio"><option value="0.015625">按边长1/64比例内缩（3456×2048时左右18px、上下32px）</option><option value="0">不内缩（保留完整每列）</option></select></div>
       <div class="hint">策略与尺寸由模板恢复。拼版均只请求1张，请在Prompt中明确等分无间隔拼版；详情每列须为精确9:16，不做拉伸。</div>
     </details>
-    <label>选择 Prompt 模板</label><select id="templateSelect"></select>
-    <label>模板名称</label><input id="templateName" maxlength="100" placeholder="选择“新建模板”后填写名称">
-    <div class="row"><button id="saveTemplate" type="button">保存模板</button><button id="renameTemplate" type="button">重命名</button><button id="deleteTemplate" type="button">删除模板</button></div>
-    <label>固定品牌参考图（最多4张，商品行图片在前，品牌图在后）</label>
-    <div id="brandSlots"></div>
-    <div class="hint">品牌图与模板仅保存在当前浏览器；清理网站数据、隐私模式或换设备可能丢失。支持重新上传替换和删除，不会上传到 GitHub。</div>
+    <details id="brandSettings" class="image-detail"><summary>固定品牌参考图 · 最多4张（展开维护）</summary>
+      <div id="brandSlots"></div>
+      <div class="hint">上传一次后默认使用；商品行图片在前，品牌参考图在后。参考图和模板只存当前浏览器，清理网站数据或换设备可能丢失。</div>
+    </details>
     <div id="imageError" class="err" role="alert" aria-live="polite"></div>
   </div>
   <div class="row">
@@ -589,6 +620,11 @@ function fillOutputSel() {
   const wantAttach = !isTextMode();
   const savedOutput = loadModeCfg(cfg, 'output', taskType());
   const fs = fieldMetas.filter(f => wantAttach ? f.type === 17 : f.type === 1);
+  if (isImageMode()) {
+    const option = document.createElement('option');
+    option.value = ''; option.textContent = '请选择本模板的输出附件列';
+    sel.appendChild(option);
+  }
   for (const f of fs) {
     const o = document.createElement('option'); o.value = f.id; o.textContent = f.name;
     if (savedOutput === f.id) o.selected = true; sel.appendChild(o);
@@ -596,14 +632,20 @@ function fillOutputSel() {
   if (!fs.length) {
     const o = document.createElement('option'); o.value = '';
     o.textContent = wantAttach ? '(本表没有附件列,请先建一个附件字段)' : '(本表没有文本列,请先建一个文本字段)';
-    sel.appendChild(o);
+    if (!isImageMode()) sel.appendChild(o); else sel.options[0].textContent = o.textContent;
   }
+  if (isImageMode() && savedOutput && fs.some(f => f.id === savedOutput)) sel.value = savedOutput;
+  if (isImageMode()) imageOptions?.restoreOutputForTable();
 }
 function toggleTaskUI() {
   const isVid = isVideoMode(), isTxt = isTextMode(), isImg = isImageMode();
   $('videoCfg').style.display = isVid ? '' : 'none';
   $('sizeRow').style.display = isImg ? '' : 'none';
   $('imageExtras').style.display = isImg ? '' : 'none';
+  $('imageTemplatePanel').style.display = isImg ? '' : 'none';
+  $('templateOutputHint').style.display = isImg ? '' : 'none';
+  $('contentSectionHeading').textContent = isImg ? '② 商品输入与 Prompt' : '输入与内容';
+  $('outputSectionHeading').textContent = isImg ? '③ 输出到飞书（随模板保存）' : '输出到飞书';
   $('skipMode').options[1].textContent = isImg ? '继续生成（保留旧附件并追加）' : '覆盖重写';
   $('resumeBtn').style.display = isVid ? '' : 'none';
   $('textHint').style.display = isTxt ? '' : 'none';
@@ -685,7 +727,7 @@ async function init() {
   $('model').value = loadModeCfg(cfg, 'model', activeTaskType);
   ['vidApiKind','vidApiBase','vidApiKey','vidModel','vidDur','vidRes','vidRatio','vidImgMode'].forEach(id => { if (cfg[id] != null && cfg[id] !== '') $(id).value = cfg[id]; });
   ['apiBase','apiKey','model','prompt','outputSel','concurrency','maxRows','imgSize','taskCol','vidApiKind','vidApiBase','vidApiKey','vidModel','vidDur','vidRes','vidRatio','vidImgMode'].forEach(id => $(id).addEventListener('change', saveCfg));
-  imageOptions = await ImageOptions.init({$, cfg, saveCfg, onError: message => log(message, 1)});
+  imageOptions = await ImageOptions.init({$, cfg, saveCfg, getTableId: () => tableId, onError: message => log(message, 1)});
   $('taskType').addEventListener('change', switchTaskType);
   toggleTaskUI();
   try { await refreshTable(); } catch (e) { log('读取表格失败: ' + (e && e.message ? e.message : e), 1); }
