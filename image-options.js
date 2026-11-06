@@ -133,8 +133,10 @@
     select.addEventListener('change',validate);
     $('saveTemplate').onclick=()=>show(()=>{
       const v=current(),name=$('templateName').value.trim();if(!name)throw Error('请填写模板名称');
-      if (!getTableId() || !outputSelect.value || ![...outputSelect.options].some(o=>o.value===outputSelect.value && o.value)) throw Error('请选择当前飞书表的输出附件列，然后再保存模板');
-      const t={...templates.find(t=>t.id===select.value),id:select.value || crypto.randomUUID(),name,prompt:$('prompt').value,n:v.n,size:v.size,generationMode:v.generationMode,autoCrop2x2:v.autoCrop2x2,detailInsetRatio:v.detailInsetRatio,outputFieldId:outputSelect.value,outputTableId:getTableId()};
+      // A draft may be saved before a destination is picked. Only bind when a
+      // real attachment field is selected; otherwise remind the user at run time.
+      if (outputSelect.value && (![...outputSelect.options].some(o=>o.value===outputSelect.value) || !getTableId())) throw Error('当前输出列不是有效的飞书附件字段');
+      const t={...templates.find(t=>t.id===select.value),id:select.value || crypto.randomUUID(),name,prompt:$('prompt').value,n:v.n,size:v.size,generationMode:v.generationMode,autoCrop2x2:v.autoCrop2x2,detailInsetRatio:v.detailInsetRatio,outputFieldId:outputSelect.value || '',outputTableId:outputSelect.value ? getTableId() : ''};
       const next=templates.some(x=>x.id===t.id)?templates.map(x=>x.id===t.id?t:x):[...templates,t];
       saveTemplates(localStorage,next);templates=next;drawTemplates(t.id);restoreOutputForTable();
     });
