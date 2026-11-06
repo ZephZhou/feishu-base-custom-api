@@ -6,16 +6,23 @@
     {id:'main', name:'主图模板', prompt:'以第一张商品白底图为商品主体，后续图片仅作为品牌风格参考。保持商品外形、颜色、商标及包装文字，生成简洁真实的电商主图场景，不添加水印。', n:4, size:'1024x1024', autoCrop2x2:false},
     {id:'detail', name:'详情页模板', prompt:'以第一张商品白底图为商品主体，后续图片仅作为品牌风格参考。保持商品一致，生成展示产品细节与使用场景的电商详情页图片，不虚构产品功能，不添加水印。', n:3, size:'1024x1536', autoCrop2x2:false}
   ]; }
+  // Older saved templates did not include the auto-crop setting. Migrate them
+  // in memory so saving one template never fails because another is legacy.
+  function normalizeTemplate(template) {
+    if (template.autoCrop2x2 === undefined) return {...template,autoCrop2x2:false};
+    if (typeof template.autoCrop2x2 !== 'boolean') throw Error('模板自动裁切字段格式错误');
+    return template;
+  }
   function loadTemplates(storage) {
     const saved = storage.getItem(TEMPLATE_KEY);
     const templates = saved === null ? defaults() : JSON.parse(saved);
     if (!Array.isArray(templates) || templates.some(t=>!t || typeof t.id!=='string' || typeof t.name!=='string' || typeof t.prompt!=='string')) throw Error('模板数据格式不正确');
-    templates.forEach(t=>{ rules.validate(t.size,t.n); if (t.autoCrop2x2 !== undefined && typeof t.autoCrop2x2 !== 'boolean') throw Error('模板自动裁切字段格式错误'); });
-    return templates;
+    return templates.map(normalizeTemplate).map(t=>{ const v=rules.validate(t.size,t.n); if(t.autoCrop2x2 && (v.n!==1 || v.width!==v.height))throw Error('自动裁切模板需要 n=1 和正方形图片');return t; });
   }
   function saveTemplates(storage, templates) {
-    templates.forEach(t => { if (!t.name.trim() || t.name.length > 100) throw Error('模板名称须为 1～100 个字符'); const v=rules.validate(t.size,t.n); if (typeof t.autoCrop2x2 !== 'boolean') throw Error('模板自动裁切状态须为布尔值'); if (t.autoCrop2x2 && (v.n !== 1 || v.width !== v.height)) throw Error('自动裁切模板需要 n=1 和正方形图片'); });
-    storage.setItem(TEMPLATE_KEY, JSON.stringify(templates));
+    const normalized = templates.map(normalizeTemplate);
+    normalized.forEach(t => { if (!t.name.trim() || t.name.length > 100) throw Error('模板名称须为 1～100 个字符'); const v=rules.validate(t.size,t.n); if (t.autoCrop2x2 && (v.n !== 1 || v.width !== v.height)) throw Error('自动裁切模板需要 n=1 和正方形图片'); });
+    storage.setItem(TEMPLATE_KEY, JSON.stringify(normalized));
   }
   let database;
   function openDB() {
