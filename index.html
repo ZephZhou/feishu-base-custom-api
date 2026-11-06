@@ -118,6 +118,18 @@
   <textarea id="prompt" placeholder="例：你是电商专家。产品信息：【基础信息】，目标人群：【目标人群】。请输出……"></textarea>
   <label id="outputLabel">输出列（生成的文案写这里，选文本列）</label>
   <select id="outputSel"></select>
+  <div id="imageExtras" style="display:none">
+    <div id="generationSummary" class="hint" role="status" aria-live="polite"></div>
+    <div id="cropOriginals" class="hint" hidden>
+      <p>已付费拼版原图下载（仅当前页面有效，请在关闭或刷新前保存）：</p>
+      <div id="cropOriginalLinks"></div>
+      <button id="clearCropOriginals" type="button">清除下载链接（释放内存）</button>
+    </div>
+    <details id="imageAdvanced"><summary>高级设置（模板策略、数量和尺寸）</summary>
+      <label>模板生成策略</label><select id="generationMode"><option value="standard">标准图片生成</option><option value="crop_2x2">主图2×2拼版</option><option value="crop_3x1">详情3×1拼版</option></select>
+      <div id="standardCount">    <label>标准模式生成数量（一次请求，1～10张）</label>
+    <select id="imageCount"><option value="1">1 张</option><option value="2">2 张</option><option value="3">3 张</option><option value="4">4 张</option><option value="5">5 张</option><option value="6">6 张</option><option value="7">7 张</option><option value="8">8 张</option><option value="9">9 张</option><option value="10">10 张</option></select></div>
+      <label hidden><input id="autoCrop2x2" type="checkbox">旧自动裁切兼容节点</label>
   <div class="row" id="sizeRow" style="display:none">
     <div>
       <label>图片尺寸</label>
@@ -128,18 +140,11 @@
       </select>
     </div>
   </div>
-  <div id="imageExtras" style="display:none">
-    <label>生成数量（一次请求返回多张，数量越多费用越高）</label>
-    <select id="imageCount"><option value="1">1 张</option><option value="2">2 张</option><option value="3">3 张</option><option value="4">4 张</option><option value="5">5 张</option><option value="6">6 张</option><option value="7">7 张</option><option value="8">8 张</option><option value="9">9 张</option><option value="10">10 张</option></select>
-    <label><input id="autoCrop2x2" type="checkbox" style="width:auto"> 生成后自动裁切为4张主图（2×2）</label>
-    <div class="hint">裁切模式只生成1张正方形图，建议2880×2880。请在现有Prompt中明确要求等分、无边框、无间隔的2×2拼版；裁切不会修改Prompt或重绘商品。</div>
-    <div id="cropOriginals" class="hint" hidden>
-      <p>已付费拼版原图下载（仅当前页面有效，请在关闭或刷新前保存）：</p>
-      <div id="cropOriginalLinks"></div>
-      <button id="clearCropOriginals" type="button">清除下载链接（释放内存）</button>
-    </div>
     <div class="row"><div><label>宽度（像素）</label><input id="imageWidth" type="number" min="16" max="3840" step="16" value="1024"></div><div><label>高度（像素）</label><input id="imageHeight" type="number" min="16" max="3840" step="16" value="1024"></div></div>
     <div class="hint">宽高为16的倍数，比例1:3～3:1，最长边3840，总像素655360～8294400。图片模式保留旧附件并追加新结果；大批量请降低行并发。</div>
+      <div id="detailInsetRow"><label>详情图安全内缩</label><select id="detailInsetRatio"><option value="0.015625">按边长1/64比例内缩（3456×2048时左右18px、上下32px）</option><option value="0">不内缩（保留完整每列）</option></select></div>
+      <div class="hint">策略与尺寸由模板恢复。拼版均只请求1张，请在Prompt中明确等分无间隔拼版；详情每列须为精确9:16，不做拉伸。</div>
+    </details>
     <label>选择 Prompt 模板</label><select id="templateSelect"></select>
     <label>模板名称</label><input id="templateName" maxlength="100" placeholder="选择“新建模板”后填写名称">
     <div class="row"><button id="saveTemplate" type="button">保存模板</button><button id="renameTemplate" type="button">重命名</button><button id="deleteTemplate" type="button">删除模板</button></div>
@@ -556,6 +561,7 @@ const saveCfg = () => {
     inputs: [...document.querySelectorAll('.chip.on')].map(c => c.textContent),
     output: $('outputSel').value, concurrency: $('concurrency').value, maxRows: $('maxRows').value, imgSize: $('imgSize').value,
     imageCount: $('imageCount').value, imageWidth: $('imageWidth').value, imageHeight: $('imageHeight').value, imageTemplate: $('templateSelect').value,
+    generationMode: $('generationMode').value, detailInsetRatio: Number($('detailInsetRatio').value),
     autoCrop2x2: $('autoCrop2x2').checked, imageCountBeforeCrop: $('autoCrop2x2').dataset.normalCount || $('imageCount').value,
     taskType: $('taskType').value, taskCol: $('taskCol').value,
     vidApiKind: $('vidApiKind').value, vidApiBase: $('vidApiBase').value, vidApiKey: $('vidApiKey').value,
@@ -735,7 +741,7 @@ async function hasInput(rid) {
 
 // 拼提示词(模板可留空:留空则用所选文本列内容当提示词) + 收参考图URL
 async function buildInput(recordId) {
-  const tpl = $('prompt').value;
+  const tpl = isImageMode() && running ? imageRunOptions.promptTemplate : $('prompt').value;
   let text = tpl;
   const extra = []; const imageUrls = [];
   const inputNames = selectedInputs();
@@ -1076,13 +1082,13 @@ async function processRecords(recordIds) {
             const sz = await writeImage(outFid, rid, res, ac.signal);
             if (res.images.length !== res.expectedCount) log('上游返回 ' + res.images.length + '/' + res.expectedCount + ' 张，有效图片已保留；不自动重试以免重复扣费', 1);
             done++;
-            if (res.autoCrop2x2) log('✅ 行' + rid.slice(-6) + ' 已生成1张拼版图，成功裁切4张并回写飞书');
-            else log('✅ 行' + rid.slice(-6) + ' 出图完成(' + res.images.length + '张·' + (res.edit ? '图生图' : '文生图') + '·' + Math.round(sz / 1024) + 'KB)');
+            const uploaded=res.generationMode==='crop_3x1'?3:res.generationMode==='crop_2x2'?4:res.images.length;
+            log('✅ 行' + rid.slice(-6) + ' API生成'+res.images.length+'张，'+(res.generationMode!=='standard'?'裁切'+uploaded+'张，':'')+'上传'+uploaded+'张，已回写飞书（'+Math.round(sz/1024)+'KB）');
           }
         } finally { clearTimeout(timer); aborters.delete(ac); }
       } catch (e) {
         fail++;
-        if(isImageMode() && imageRunOptions?.autoCrop2x2)$('imageError').textContent=e.message;
+        if(isImageMode() && imageRunOptions?.generationMode!=='standard')$('imageError').textContent=e.message;
         log('行' + rid.slice(-6) + ' ' + e.message, 1);
       }
     }
