@@ -186,8 +186,8 @@
   </div>
   <div class="row">
     <div>
-      <label>最多处理几行</label>
-      <input type="number" id="maxRows" value="10" min="1">
+      <label>批量处理上限（行）</label>
+      <input type="number" id="maxRows" value="10" min="1" max="500" step="1">
     </div>
     <div>
       <label>并发数(同时几行)</label>
@@ -203,8 +203,9 @@
   </div>
 </div>
 
-<button class="primary" id="runBtn">▶ 开始生成文本（文本列为空的行）</button>
-<button class="ghost" id="runSelBtn">只跑当前光标所在行</button>
+<div id="batchHelp" class="hint" role="status" aria-live="polite" style="margin:7px 0 5px">主按钮批量处理当前视图的可见行；最多10行，自动跳过已有内容或缺少输入的行。</div>
+<button class="primary" id="runBtn">▶ 批量开始生成</button>
+<button class="ghost" id="runSelBtn">只跑当前光标所在行（单行测试）</button>
 <button class="ghost" id="resumeBtn" style="display:none">⏯ 续查未完成的视频任务</button>
 <div id="log"></div>
 
@@ -609,11 +610,24 @@ const taskType = () => $('taskType').value;
 const isVideoMode = () => taskType() === 'video';
 const isTextMode = () => taskType() === 'text';
 const isImageMode = () => taskType() === 'image';
-const runBtnLabel = () => {
-  if (isVideoMode()) return '▶ 开始生成视频（附件列为空的行）';
-  if (isTextMode()) return '▶ 开始生成文本（文本列为空的行）';
-  return '▶ 开始出图（附件列为空的行）';
+const batchLimit = () => {
+  const n = Number($('maxRows').value);
+  return Number.isFinite(n) && n >= 1 ? Math.min(500, Math.floor(n)) : 10;
 };
+const runBtnLabel = () => {
+  const limit = batchLimit();
+  if (isVideoMode()) return '▶ 批量生成视频（最多' + limit + '行）';
+  if (isTextMode()) return '▶ 批量生成文本（最多' + limit + '行）';
+  return '▶ 批量开始出图（最多' + limit + '行）';
+};
+function updateBatchHelp() {
+  if (running) return;
+  $('runBtn').textContent = runBtnLabel();
+  $('batchHelp').textContent = '批量扫描当前视图可见行，最多处理' + batchLimit()
+    + '行；' + ($('skipMode').value === 'skip' ? '跳过已有输出' : '已有内容会继续生成（图片追加附件）')
+    + '；并发 ' + (Number($('concurrency').value) || 1)
+    + ' 行。下方按钮仅处理选中一行。';
+}
 function fillOutputSel() {
   const cfg = loadCfg();
   const sel = $('outputSel'); sel.innerHTML = '';
@@ -666,7 +680,7 @@ function toggleTaskUI() {
     $('outputLabel').textContent = '输出列（生成的视频写这里，选附件列）';
     $('inputLabel').textContent = '输入列（点选，可多个；📎附件列=当首帧或参考图）';
   }
-  if (!running) $('runBtn').textContent = runBtnLabel();
+  updateBatchHelp();
   if (fieldMetas.length) fillOutputSel();
 }
 function switchTaskType() {
@@ -727,6 +741,8 @@ async function init() {
   $('model').value = loadModeCfg(cfg, 'model', activeTaskType);
   ['vidApiKind','vidApiBase','vidApiKey','vidModel','vidDur','vidRes','vidRatio','vidImgMode'].forEach(id => { if (cfg[id] != null && cfg[id] !== '') $(id).value = cfg[id]; });
   ['apiBase','apiKey','model','prompt','outputSel','concurrency','maxRows','imgSize','taskCol','vidApiKind','vidApiBase','vidApiKey','vidModel','vidDur','vidRes','vidRatio','vidImgMode'].forEach(id => $(id).addEventListener('change', saveCfg));
+  ['maxRows','concurrency'].forEach(id => $(id).addEventListener('input', updateBatchHelp));
+  $('skipMode').addEventListener('change', updateBatchHelp);
   imageOptions = await ImageOptions.init({$, cfg, saveCfg, getTableId: () => tableId, onError: message => log(message, 1)});
   $('taskType').addEventListener('change', switchTaskType);
   toggleTaskUI();
@@ -1170,18 +1186,21 @@ async function guardedRun(getTargets, allowStopToggle, processor, opts) {
 
 $('runBtn').onclick = () => guardedRun(async () => {
   const all = await listRecordIds();
-  const max = parseInt($('maxRows').value) || 10;
+  const max = batchLimit();
   const outFid = $('outputSel').value;
   const targets = [];
-  let pend = 0;
+  let pend = 0, filled = 0, withoutInput = 0;
   for (const rid of all) {
     if (stopFlag) break;
     if (targets.length >= max) break;
-    if ($('skipMode').value !== 'overwrite' && await cellFilled(outFid, rid)) continue;   // 输出已填→跳
-    if (isVideoMode() && await getPendingTask(rid)) { pend++; continue; }   // ★在途任务→绝不重复提交(重复扣费),走「续查」取片
-    if (!(await hasInput(rid))) continue;   // ★输入为空→不排任务
+    if ($('skipMode').value !== 'overwrite' && await cellFilled(outFid, rid)) { filled++; continue; } // 已有输出→跳过
+    if (isVideoMode() && await getPendingTask(rid)) { pend++; continue; } // 在途任务不能重复扣费
+    if (!(await hasInput(rid))) { withoutInput++; continue; } // 无商品输入→跳过
     targets.push(rid);
   }
+  log('批量筛选：当前视图可见 '+all.length+' 行；本次排队 '+targets.length+' 行（处理上限 '+max+'）；'
+    +'已填跳过 '+filled+' 行；输入为空 '+withoutInput+' 行'
+    +(targets.length===max && all.length>targets.length?'；已达到批量上限，可修改“批量处理上限”后继续':''));
   if (pend) log('· ' + pend + ' 行有在途任务已跳过——点「⏯ 续查未完成的视频任务」取片,不重复扣费');
   return targets;
 }, true);
