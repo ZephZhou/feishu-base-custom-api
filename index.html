@@ -1126,6 +1126,7 @@ async function processRecords(recordIds) {
         if ($('skipMode').value === 'skip' && await cellFilled(outFid, rid)) { skip++; log('· 行' + rid.slice(-6) + (isTextMode() ? ' 已有文案,跳过' : ' 已有图,跳过')); continue; }
         const input = await buildInput(rid);
         if (!input) { skip++; log('· 行' + rid.slice(-6) + ' 无参考图/无提示词,跳过'); continue; }
+        if (isImageMode()) log('商品原图核验：行'+rid.slice(-6)+'，商品附件图 '+input.imageUrls.length+' 张，固定品牌参考图 '+(imageRunOptions?.brandImages?.length || 0)+' 张；即将提交本行请求。');
         const ac = new AbortController(); aborters.add(ac);
         const timer = setTimeout(() => ac.abort(), isImageMode() ? IMAGE_REQ_TIMEOUT_MS : REQ_TIMEOUT_MS);   // 硬超时防空转
         try {
@@ -1168,8 +1169,13 @@ async function guardedRun(getTargets, allowStopToggle, processor, opts) {
   if (!$('outputSel').value) { log(isTextMode() ? '请先在表里建一个"文本"字段当输出列' : '请先在表里建一个"附件"字段当输出列', 1); return; }
   if (!(opts && opts.noPrompt) && !$('prompt').value.trim() && !selectedInputs().length) { log('请写提示词,或选一个含提示词/产品图的输入列', 1); return; }
   if (isImageMode()) {
-    try { if (!imageOptions) throw new Error('图片配置正在读取，请稍后'); imageRunOptions = imageOptions.snapshot(); $('imageError').textContent = ''; }
-    catch(e) { $('imageError').textContent = e.message; log(e.message, 1); return; }
+    try {
+      if (!imageOptions) throw new Error('图片配置正在读取，请稍后');
+      ImageAPI.assertProductImageFields(selectedInputs().map(fieldMetaByName));
+      imageRunOptions = imageOptions.snapshot();
+      $('imageError').textContent = '';
+      log('商品图来源预检通过：已选 '+selectedInputs().filter(n=>fieldMetaByName(n).type===17).length+' 个普通附件输入列；将逐行核对商品图数量。');
+    } catch(e) { $('imageError').textContent = e.message; log(e.message, 1); return; }
   }
   saveCfg();
   running = true; stopFlag = false;
