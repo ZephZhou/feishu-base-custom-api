@@ -1,6 +1,7 @@
 /* Shared browser/Node image pipeline. No credentials or external dependencies. */
 (function (root) {
   const rules = typeof module !== 'undefined' ? require('./server/image-rules.js') : root.ImageRules;
+  const BUILD_ID = '2026.11.25.1';
   const AUTO_CROP_INSET_PX = 24;
   const MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
   function endpoint(base, kind) {
@@ -209,6 +210,6 @@
     await table.setCellValue(fid, rid, [...(existing || []), ...files.map((file,i)=>({name:file.name, size:file.size, type:file.type, token:tokens[i], timeStamp:file.lastModified}))]);
     return files.reduce((sum,file)=>sum+file.size,0);
   }
-  const api = {checkCropSupport, crop2x2, crop3x1, endpoint, isImage, lookupImages, lookupAttachmentUrls, assertProductImageFields, attachmentUrls, imageBlob, generate, write};
+  const api = {BUILD_ID, checkCropSupport, crop2x2, crop3x1, endpoint, isImage, lookupImages, lookupAttachmentUrls, assertProductImageFields, attachmentUrls, imageBlob, generate, write};
   if (typeof module !== 'undefined') module.exports = api; else root.ImageAPI = api;
 })(globalThis);

@@ -9,6 +9,10 @@
   body { font: 13px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #1f2329; background: #f5f6f7; padding: 12px; }
   h1 { font-size: 15px; margin-bottom: 2px; }
   .sub { color: #8f959e; font-size: 11px; margin-bottom: 10px; }
+  #buildStrip {position:sticky;top:0;z-index:40;background:#f5f6f7;display:flex;justify-content:space-between;align-items:center;gap:6px;padding:4px 2px;margin:-4px 0 7px;border-bottom:1px solid #e5e6eb;font-size:11px;}
+  #buildStrip .buildTag {color:#2458a6;font-weight:650;letter-spacing:.1px;white-space:nowrap;}
+  #buildStrip #buildState {color:#4b7762;text-align:right;font-size:10px;}
+  #buildStrip #buildState.bad {color:#cf4d2a;font-weight:650;}
   .card { background: #fff; border: 1px solid #e5e6eb; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
   .card h2 { font-size: 12px; color: #646a73; margin-bottom: 8px; }
   label { display: block; font-size: 12px; color: #646a73; margin: 8px 0 3px; }
@@ -51,6 +55,7 @@
 </style>
 </head>
 <body>
+<div id="buildStrip"><span class="buildTag" id="appBuild" title="用于识别实际加载的 GitHub Pages 页面版本">插件版本 v2026.11.25.1</span><span id="buildState" role="status" aria-live="polite">校验图片模块中…</span></div>
 <h1>🔌 多维表格 · 自定义 API 插件</h1>
 <div class="sub">选输入列 → 写提示词 → 批量生成文本/图片/视频写回表格</div>
 
@@ -555,10 +560,22 @@ html body {
 window.__BITABLE__ = tQ;  /* tQ = SDK内部 export{ tQ as bitable } 的真实别名 */
 </script>
 <script src="./server/image-rules.js"></script>
-<script src="./image-api.js?v=lookup-image-20261125"></script>
-<script src="./image-options.js"></script>
+<script src="./image-api.js?v=20261125.1"></script>
+<script src="./image-options.js?v=20261125.1"></script>
 <script type="module">
+const APP_BUILD = '2026.11.25.1';
 const $ = id => document.getElementById(id);
+const imageModuleMatchesBuild = () => !!window.ImageAPI &&
+  window.ImageAPI.BUILD_ID === APP_BUILD &&
+  typeof window.ImageAPI.lookupAttachmentUrls === 'function';
+function checkBuildVersion() {
+  const ok=imageModuleMatchesBuild();
+  const status=$('buildState');
+  status.textContent=ok?'图片组件已同步':'图片组件缓存不一致 · 请刷新';
+  status.classList.toggle('bad',!ok);
+  return ok;
+}
+checkBuildVersion();
 const log = (msg, isErr) => { const el = $('log'); el.style.display='block'; el.textContent += (isErr?'✗ ':'') + msg + '\n'; el.scrollTop = el.scrollHeight; };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const selectedInputs = () => [...document.querySelectorAll('.chip.on')].map(c => c.dataset.name || c.textContent.replace(/^📎/, ''));
@@ -704,7 +721,7 @@ async function refreshTable() {
   table = await bitable.base.getActiveTable();
   tableId = table.id;
   const name = await table.getName();
-  document.querySelector('.sub').textContent = '当前表：' + name + (window.__sdkSource ? ' · SDK:' + window.__sdkSource : '');
+  document.querySelector('.sub').textContent = '当前表：' + name + ' · v' + APP_BUILD + (window.__sdkSource ? ' · SDK:' + window.__sdkSource : '');
   fieldMetas = await table.getFieldMetaList();
   const cfg = loadCfg();
   const chips = $('inputChips'); chips.innerHTML = '';
@@ -1179,6 +1196,7 @@ async function guardedRun(getTargets, allowStopToggle, processor, opts) {
   if (!(opts && opts.noPrompt) && !$('prompt').value.trim() && !selectedInputs().length) { log('请写提示词,或选一个含提示词/产品图的输入列', 1); return; }
   if (isImageMode()) {
     try {
+      if (!checkBuildVersion()) throw Error('插件组件版本不一致：页面 v'+APP_BUILD+'，图片模块 '+(window.ImageAPI?.BUILD_ID || '旧版/未知')+'。请等待 GitHub Pages 发布完成后重新打开插件，或在飞书插件地址末尾添加 ?v=20261125.1 重新加载。本次未调用生图API。');
       if (!imageOptions) throw new Error('图片配置正在读取，请稍后');
       const metas=selectedInputs().map(fieldMetaByName);
       ImageAPI.assertProductImageFields(metas);
