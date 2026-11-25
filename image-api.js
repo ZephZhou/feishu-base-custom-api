@@ -12,6 +12,18 @@
     return u.href;
   }
   function isImage(a) { return !!a && (/^image\//i.test(a.type || '') || /\.(png|jpe?g|webp)$/i.test(a.name || '')); }
+  // A displayed lookup/derived thumbnail is not a directly downloadable attachment.
+  // getCellAttachmentUrls needs an original attachment fieldId and recordId.
+  function assertProductImageFields(metas = []) {
+    const derivedImageColumns = metas.filter(f =>
+      (f.type === 19 || f.type === 20)
+      && /图|图片|照片|封面|相片|image|photo|picture|thumbnail/i.test(String(f.name || ''))
+    );
+    if (derivedImageColumns.length) {
+      const list = derivedImageColumns.map(f=>String(f.name)+'（'+(f.type===19?'查找引用':'公式')+'字段）').join('、');
+      throw Error('商品图片输入列 '+list+' 不是普通附件列：插件当前无法从跨表引用取到原始附件下载地址。请使用本表真正的附件字段（类型17）存放该SKU的商品原图，或先通过飞书自动化将源表附件同步到本表，再选择该列；本次未调用生图API。');
+    }
+  }
   async function attachmentUrls(table, fid, rid, limit = 16) {
     const cell = await table.getCellValue(fid, rid);
     const images = (Array.isArray(cell) ? cell : []).filter(isImage);
@@ -177,6 +189,6 @@
     await table.setCellValue(fid, rid, [...(existing || []), ...files.map((file,i)=>({name:file.name, size:file.size, type:file.type, token:tokens[i], timeStamp:file.lastModified}))]);
     return files.reduce((sum,file)=>sum+file.size,0);
   }
-  const api = {checkCropSupport, crop2x2, crop3x1, endpoint, isImage, attachmentUrls, imageBlob, generate, write};
+  const api = {checkCropSupport, crop2x2, crop3x1, endpoint, isImage, assertProductImageFields, attachmentUrls, imageBlob, generate, write};
   if (typeof module !== 'undefined') module.exports = api; else root.ImageAPI = api;
 })(globalThis);
