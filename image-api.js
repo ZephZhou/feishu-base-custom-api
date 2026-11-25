@@ -24,6 +24,15 @@
       throw Error('商品图片输入列 '+list+' 不是普通附件列：插件当前无法从跨表引用取到原始附件下载地址。请使用本表真正的附件字段（类型17）存放该SKU的商品原图，或先通过飞书自动化将源表附件同步到本表，再选择该列；本次未调用生图API。');
     }
   }
+  // Product-centric crop modes must never call paid image generation unless an
+  // original per-row attachment was actually resolved. Standard text-to-image
+  // remains possible for backward compatibility.
+  function validateProductInputs(metas = [], generationMode = 'standard', resolvedCount) {
+    assertProductImageFields(metas);
+    if (generationMode === 'standard') return;
+    if (!metas.some(f => f.type === 17)) throw Error('主图/详情页拼版需要本表真实商品附件列（📎类型17）；当前仅有文本、查找引用或未选择输入图。请先将各 SKU 商品白底图同步到普通附件列。本次不会请求生图API。');
+    if (resolvedCount !== undefined && resolvedCount < 1) throw Error('本行实际取得的商品参考图为0张，已阻止生图。请检查该SKU在普通附件列是否有真实商品图。本次不会请求生图API。');
+  }
   async function attachmentUrls(table, fid, rid, limit = 16) {
     const cell = await table.getCellValue(fid, rid);
     const images = (Array.isArray(cell) ? cell : []).filter(isImage);
@@ -189,6 +198,6 @@
     await table.setCellValue(fid, rid, [...(existing || []), ...files.map((file,i)=>({name:file.name, size:file.size, type:file.type, token:tokens[i], timeStamp:file.lastModified}))]);
     return files.reduce((sum,file)=>sum+file.size,0);
   }
-  const api = {checkCropSupport, crop2x2, crop3x1, endpoint, isImage, assertProductImageFields, attachmentUrls, imageBlob, generate, write};
+  const api = {checkCropSupport, crop2x2, crop3x1, endpoint, isImage, assertProductImageFields, validateProductInputs, attachmentUrls, imageBlob, generate, write};
   if (typeof module !== 'undefined') module.exports = api; else root.ImageAPI = api;
 })(globalThis);
