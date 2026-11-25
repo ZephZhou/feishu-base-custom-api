@@ -555,8 +555,8 @@ html body {
 window.__BITABLE__ = tQ;  /* tQ = SDK内部 export{ tQ as bitable } 的真实别名 */
 </script>
 <script src="./server/image-rules.js"></script>
-<script src="./image-api.js"></script>
-<script src="./image-options.js"></script>
+<script src="./image-api.js?v=20261125-product-source-v2"></script>
+<script src="./image-options.js?v=20261125-product-source-v2"></script>
 <script type="module">
 const $ = id => document.getElementById(id);
 const log = (msg, isErr) => { const el = $('log'); el.style.display='block'; el.textContent += (isErr?'✗ ':'') + msg + '\n'; el.scrollTop = el.scrollHeight; };
@@ -692,6 +692,7 @@ function switchTaskType() {
 }
 
 // ── 全局状态 ──
+const APP_BUILD = '2026-11-25-source-v2';
 let table = null, tableId = null, fieldMetas = [];
 let running = false, stopFlag = false;
 let imageOptions = null, imageRunOptions = null;
@@ -704,7 +705,7 @@ async function refreshTable() {
   table = await bitable.base.getActiveTable();
   tableId = table.id;
   const name = await table.getName();
-  document.querySelector('.sub').textContent = '当前表：' + name + (window.__sdkSource ? ' · SDK:' + window.__sdkSource : '');
+  document.querySelector('.sub').textContent = '当前表：' + name + ' · v' + APP_BUILD + (window.__sdkSource ? ' · SDK:' + window.__sdkSource : '');
   fieldMetas = await table.getFieldMetaList();
   const cfg = loadCfg();
   const chips = $('inputChips'); chips.innerHTML = '';
@@ -789,6 +790,14 @@ async function cellFilled(fid, rid) {
 // 该行选中的输入列是否真有内容(轻量,不取附件URL);没选输入列则靠模板→返回true不按行过滤
 async function hasInput(rid) {
   const cols = selectedInputs().map(fieldMetaByName);
+  if (isImageMode() && imageRunOptions?.generationMode !== 'standard') {
+    // Skip rows without an actual per-record product image, even if SKU or lookup text exists.
+    for (const meta of cols.filter(f=>f.type===17)) {
+      const values = await table.getCellValue(meta.id, rid).catch(()=>null);
+      if (Array.isArray(values) && values.some(ImageAPI.isImage)) return true;
+    }
+    return false;
+  }
   if (!cols.length) return !!$('prompt').value.trim();
   for (const meta of cols) {
     if (meta.type === 17) { const c = await table.getCellValue(meta.id, rid).catch(() => null); if (Array.isArray(c) && c.some(ImageAPI.isImage)) return true; }
@@ -817,7 +826,10 @@ async function buildInput(recordId) {
       else if (v) extra.push(v);   // 未被模板引用的文本列→当提示词内容
     }
   }
-  if (isImageMode() && selectedInputs().some(n => fieldMetaByName(n).type === 17) && !imageUrls.length) throw new Error('所选附件输入列没有可用商品图，本行未提交生图');
+  if (isImageMode()) {
+    ImageAPI.validateProductInputs(inputNames.map(fieldMetaByName), imageRunOptions?.generationMode || 'standard', imageUrls.length);
+    if (selectedInputs().some(n => fieldMetaByName(n).type === 17) && !imageUrls.length) throw new Error('所选附件输入列没有可用商品图，本行未提交生图');
+  }
   let prompt = text.trim();
   if (extra.length) prompt = prompt ? prompt + '\n' + extra.join('\n') : extra.join('\n');
   if (!imageUrls.length && !prompt) return null;   // 既无参考图也无提示词→不生成
@@ -1126,7 +1138,13 @@ async function processRecords(recordIds) {
         if ($('skipMode').value === 'skip' && await cellFilled(outFid, rid)) { skip++; log('· 行' + rid.slice(-6) + (isTextMode() ? ' 已有文案,跳过' : ' 已有图,跳过')); continue; }
         const input = await buildInput(rid);
         if (!input) { skip++; log('· 行' + rid.slice(-6) + ' 无参考图/无提示词,跳过'); continue; }
-        if (isImageMode()) log('商品原图核验：行'+rid.slice(-6)+'，商品附件图 '+input.imageUrls.length+' 张，固定品牌参考图 '+(imageRunOptions?.brandImages?.length || 0)+' 张；即将提交本行请求。');
+        if (isImageMode()) {
+          const skuField = fieldMetas.find(f=>f.name.toLowerCase()==='sku');
+          const sku = skuField ? String(await table.getCellString(skuField.id,rid).catch(()=>'' )).trim() : '';
+          log('商品原图核验：行 '+rid.slice(-6)+(sku?' / SKU '+sku:'')+'；原图 '+input.imageUrls.length
+            +' 张；来源列 '+selectedInputs().filter(n=>fieldMetaByName(n).type===17).join('、')
+            +'；固定品牌图 '+(imageRunOptions?.brandImages?.length || 0)+' 张；即将发送当前商品。');
+        }
         const ac = new AbortController(); aborters.add(ac);
         const timer = setTimeout(() => ac.abort(), isImageMode() ? IMAGE_REQ_TIMEOUT_MS : REQ_TIMEOUT_MS);   // 硬超时防空转
         try {
@@ -1171,10 +1189,12 @@ async function guardedRun(getTargets, allowStopToggle, processor, opts) {
   if (isImageMode()) {
     try {
       if (!imageOptions) throw new Error('图片配置正在读取，请稍后');
-      ImageAPI.assertProductImageFields(selectedInputs().map(fieldMetaByName));
       imageRunOptions = imageOptions.snapshot();
+      const metas=selectedInputs().map(fieldMetaByName);
+      ImageAPI.validateProductInputs(metas, imageRunOptions.generationMode);
+      if (metas.some(f=>f.id===$('outputSel').value)) throw Error('输出附件列不能同时作为商品输入列，请取消勾选输出列，以免重复生成旧图片。');
       $('imageError').textContent = '';
-      log('商品图来源预检通过：已选 '+selectedInputs().filter(n=>fieldMetaByName(n).type===17).length+' 个普通附件输入列；将逐行核对商品图数量。');
+      log('商品图来源预检通过 · 插件版本 '+APP_BUILD+' · 真实附件输入列 '+metas.filter(f=>f.type===17).map(f=>f.name).join('、')+'；将逐行检查商品图。');
     } catch(e) { $('imageError').textContent = e.message; log(e.message, 1); return; }
   }
   saveCfg();
