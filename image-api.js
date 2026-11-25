@@ -12,17 +12,37 @@
     return u.href;
   }
   function isImage(a) { return !!a && (/^image\//i.test(a.type || '') || /\.(png|jpe?g|webp)$/i.test(a.name || '')); }
-  // A displayed lookup/derived thumbnail is not a directly downloadable attachment.
-  // getCellAttachmentUrls needs an original attachment fieldId and recordId.
+  // Lookup values can expose computed attachment data (type:17, value:[...]).
+  // Only accept image attachments with tokens and never reinterpret text as an image.
+  function lookupImages(cell) {
+    const results=[];
+    const visit=(item,depth)=>{
+      if(depth>5 || item == null) return;
+      if(Array.isArray(item)) {for(const v of item)visit(v,depth+1);return;}
+      if(typeof item!=='object')return;
+      if(Array.isArray(item.value)) {visit(item.value,depth+1);return;}
+      if(typeof item.token!=='string' && typeof item.file_token!=='string')return;
+      const token=item.token || item.file_token, name=item.name || '', type=item.type || '';
+      if(typeof token==='string' && token && isImage({name,type})) results.push({token,name,type});
+    };
+    visit(cell,0);
+    return results;
+  }
   function assertProductImageFields(metas = []) {
-    const derivedImageColumns = metas.filter(f =>
-      (f.type === 19 || f.type === 20)
-      && /图|图片|照片|封面|相片|image|photo|picture|thumbnail/i.test(String(f.name || ''))
-    );
-    if (derivedImageColumns.length) {
-      const list = derivedImageColumns.map(f=>String(f.name)+'（'+(f.type===19?'查找引用':'公式')+'字段）').join('、');
-      throw Error('商品图片输入列 '+list+' 不是普通附件列：插件当前无法从跨表引用取到原始附件下载地址。请使用本表真正的附件字段（类型17）存放该SKU的商品原图，或先通过飞书自动化将源表附件同步到本表，再选择该列；本次未调用生图API。');
+    if(metas.some(f=>f.type===20 && /图|图片|照片|封面|相片|image|photo|picture|thumbnail/i.test(String(f.name||'')))) {
+      throw Error('公式图片输入列不支持直接取得原始附件，请改选普通附件列或查找引用图片列；本次未请求生图API。');
     }
+  }
+  async function lookupAttachmentUrls(table,fid,rid,limit=16) {
+    const cell=await table.getCellValue(fid,rid);
+    const images=lookupImages(cell);
+    if(images.length>limit)throw Error('本行查找引用商品图片超过'+limit+'张');
+    if(!images.length)throw Error('当前SKU的查找引用未返回可识别的图片附件token。请确认该列引用的是附件类型，并检查源表匹配。本次未调用生图API。');
+    let urls;
+    try {urls=await table.getCellAttachmentUrls(images.map(x=>x.token),fid,rid);}
+    catch {throw Error('查找引用中找到了图片token，但飞书拒绝使用引用单元格的权限上下文下载。需按源表字段ID和源记录ID读取原始附件；本次未调用生图API。');}
+    if(!Array.isArray(urls)||urls.length!==images.length||urls.some(x=>typeof x!=='string'||!/^https:\/\//.test(x)))throw Error('引用附件下载链接不可用，本次未调用生图API');
+    return urls;
   }
   async function attachmentUrls(table, fid, rid, limit = 16) {
     const cell = await table.getCellValue(fid, rid);
@@ -189,6 +209,6 @@
     await table.setCellValue(fid, rid, [...(existing || []), ...files.map((file,i)=>({name:file.name, size:file.size, type:file.type, token:tokens[i], timeStamp:file.lastModified}))]);
     return files.reduce((sum,file)=>sum+file.size,0);
   }
-  const api = {checkCropSupport, crop2x2, crop3x1, endpoint, isImage, assertProductImageFields, attachmentUrls, imageBlob, generate, write};
+  const api = {checkCropSupport, crop2x2, crop3x1, endpoint, isImage, lookupImages, lookupAttachmentUrls, assertProductImageFields, attachmentUrls, imageBlob, generate, write};
   if (typeof module !== 'undefined') module.exports = api; else root.ImageAPI = api;
 })(globalThis);
