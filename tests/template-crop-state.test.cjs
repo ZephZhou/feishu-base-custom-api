@@ -18,9 +18,9 @@ test('legacy main/detail templates migrate without clearing their prompts', () =
     {id:'detail', name:'详情页模板', prompt:'保留用户的详情提示词', n:3, size:'1024x1536'},
   ]);
   const old = opts.loadTemplates(storage);
-  assert.equal(old[0].autoCrop2x2, false);
+  assert.equal(old[0].generationMode, 'crop_2x2');
   assert.equal(old[1].autoCrop2x2, false);
-  const updated = old.map(t=>t.id==='main'?{...t,generationMode:'crop_2x2',autoCrop2x2:true}:t);
+  const updated = old.map(t=>t.id==='main'?{...t,generationMode:'standard',autoCrop2x2:false}:t);
   assert.doesNotThrow(()=>opts.saveTemplates(storage,updated));
   const restored = opts.loadTemplates(storage);
   assert.equal(restored.find(t=>t.id==='main').autoCrop2x2,true);
@@ -33,7 +33,7 @@ test('old saved template without checkbox can still be saved directly', () => {
   const storage=mockStorage();
   const old=[{id:'main',name:'主图',prompt:'测试',n:1,size:'2880x2880'}];
   opts.saveTemplates(storage,old);
-  assert.equal(opts.loadTemplates(storage)[0].autoCrop2x2,false);
+  assert.equal(opts.loadTemplates(storage)[0].generationMode,'crop_2x2');
 });
 
 test('legacy rectangular crop drafts remain editable, but cannot be submitted', () => {

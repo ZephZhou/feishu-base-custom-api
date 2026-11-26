@@ -44,7 +44,7 @@
 
 ## 🚀 安装到多维表格
 
-本插件由 `index.html`、同目录的 `image-api.js` / `image-options.js` 及 `server/image-rules.js` 组成，按飞书「自定义插件」方式接入：
+插件入口为 `index.html`，同时加载 `image-api.js`、`image-options.js`、`image-recovery.js` 和 `server/image-rules.js`。
 
 1. **拿到插件 URL**：
    - 方式 A：直接用本仓库的 GitHub Pages 地址（见仓库右侧 About 栏链接）

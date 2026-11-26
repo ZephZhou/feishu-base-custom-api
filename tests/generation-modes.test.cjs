@@ -8,7 +8,7 @@ test('fresh defaults specify strategies/sizes; legacy prompts, sizes and extra f
  let stored=JSON.stringify(old);const storage={getItem:()=>stored,setItem:(k,v)=>stored=v};const migrated=options.loadTemplates(storage);assert.equal(stored,JSON.stringify(old));
  assert.deepEqual(migrated.map(t=>t.generationMode),['crop_2x2','standard','standard']);for(let i=0;i<old.length;i++){assert.equal(migrated[i].prompt,old[i].prompt);assert.equal(migrated[i].size,old[i].size);assert.equal(migrated[i].name,old[i].name);}
  options.saveTemplates(storage,migrated);assert.equal(options.loadTemplates(storage)[0].extra,'保留');assert.equal(options.loadTemplates(storage)[2].n,2);
- assert.equal(options.normalizeTemplate({...old[0],generationMode:'standard'}).generationMode,'standard');
+ assert.equal(options.normalizeTemplate({...old[0],generationMode:'standard'}).generationMode,'crop_2x2');
 });
 test('3456x2048 passes existing response budget; detail geometry preserves exact 9:16',()=>{
  assert.ok(rules.checkResultBudget('3456x2048',1).estimatedBytes<rules.MAX_RESPONSE_BYTES);

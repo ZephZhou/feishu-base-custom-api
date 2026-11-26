@@ -57,7 +57,9 @@
   }
   async function imageBlob(response) {
     if (!response.ok) throw Error('下载图片失败 HTTP ' + response.status);
-    const blob = await response.blob();
+    return validateImageBlob(await response.blob());
+  }
+  async function validateImageBlob(blob) {
     if (!MIME[blob.type] || !blob.size || blob.size >= 50 * 1024 * 1024) throw Error('图片须为非空 PNG/JPEG/WebP，且小于 50MB');
     const b = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
     const valid = blob.type === 'image/png' ? b[0]===137 && b[1]===80 && b[2]===78 && b[3]===71 : blob.type === 'image/jpeg' ? b[0]===255 && b[1]===216 && b[2]===255 : String.fromCharCode(...b.slice(0,4))==='RIFF' && String.fromCharCode(...b.slice(8,12))==='WEBP';
@@ -124,91 +126,226 @@
   }
 
   function checkCropSupport(runtime = root) {
-    if(typeof runtime.createImageBitmap!=='function')throw Error('当前浏览器不支持 createImageBitmap，无法自动裁切，请更换浏览器或取消勾选');
+    if (typeof runtime.createImageBitmap !== 'function' &&
+        !(typeof runtime.Image === 'function' && typeof runtime.URL?.createObjectURL === 'function')) {
+      throw Error('当前浏览器不支持 createImageBitmap 或 Image 解码，无法自动裁切');
+    }
     let canvas,ctx;
     try{canvas=runtime.document.createElement('canvas');ctx=canvas.getContext('2d');}catch{}
     if(!ctx || typeof canvas?.toBlob!=='function')throw Error('当前浏览器 Canvas 2D 或 toBlob 不可用，无法自动裁切，请取消勾选');
     return {canvas,ctx};
   }
-  async function crop2x2(blob, signal, runtime = root, inset = AUTO_CROP_INSET_PX) {
-    if(!Number.isSafeInteger(inset) || inset<0)throw Error('安全内缩量必须为非负整数像素');
-    const {canvas,ctx}=checkCropSupport(runtime);
-    let bitmap;
-    const stopped=()=>{if(signal?.aborted)throw new DOMException('裁切已停止；请保存原始拼版图，勿重复生图','AbortError');};
+  async function decodeCropImage(blob, runtime) {
     try {
-      stopped();
-      try{bitmap=await runtime.createImageBitmap(blob,{imageOrientation:'none',premultiplyAlpha:'none',colorSpaceConversion:'none'});}
-      catch{throw Error('无法解码原始拼版图，未裁切；请下载原图，勿重复调用付费API');}
-      const {width,height}=bitmap;
+      if (typeof runtime.createImageBitmap === 'function') {
+        const bitmap = await runtime.createImageBitmap(blob, {imageOrientation:'none',premultiplyAlpha:'none',colorSpaceConversion:'none'});
+        return {image:bitmap, width:bitmap.width, height:bitmap.height, release:() => bitmap.close?.()};
+      }
+    } catch { /* Use the browser image decoder if createImageBitmap fails. */ }
+    const url = runtime.URL.createObjectURL(blob);
+    try {
+      const image = new runtime.Image();
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = reject;
+        image.src = url;
+      });
+      return {image, width:image.naturalWidth, height:image.naturalHeight, release:() => runtime.URL.revokeObjectURL(url)};
+    } catch (e) {
+      runtime.URL.revokeObjectURL(url);
+      throw e;
+    }
+  }
+  function throwIfStopped(signal) {
+    if (signal?.aborted) throw new DOMException('已停止', 'AbortError');
+  }
+  async function cropImage(blob, signal, runtime, layout, hooks = {}) {
+    const {canvas, ctx} = checkCropSupport(runtime);
+    let decoded;
+    try {
+      throwIfStopped(signal);
+      try { decoded = await decodeCropImage(blob, runtime); }
+      catch { throw Error('无法解码原始拼版图，请下载原图'); }
+      const {image, width, height} = decoded;
+      hooks.onDecoded?.(width, height);
+      const {width: outputWidth, height: outputHeight, origins} = layout(width, height);
+      canvas.width = outputWidth;
+      canvas.height = outputHeight;
+      ctx.imageSmoothingEnabled = false;
+      const images = [];
+      for (const [x, y] of origins) {
+        throwIfStopped(signal);
+        ctx.clearRect(0, 0, outputWidth, outputHeight);
+        ctx.drawImage(image, x, y, outputWidth, outputHeight, 0, 0, outputWidth, outputHeight);
+        let part;
+        try {
+          part = await new Promise((resolve, reject) => {
+            canvas.toBlob(value => value?.size ? resolve(value) : reject(Error('empty canvas result')), 'image/png');
+          });
+        } catch { throw Error('Canvas 裁切导出失败，请下载原图'); }
+        images.push(part);
+        await hooks.onPart?.(part, images.length - 1, outputWidth, outputHeight);
+      }
+      throwIfStopped(signal);
+      return images;
+    } finally {
+      decoded?.release();
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+  }
+  async function crop2x2(blob, signal, runtime = root, inset = AUTO_CROP_INSET_PX, hooks) {
+    if(!Number.isSafeInteger(inset) || inset<0)throw Error('安全内缩量必须为非负整数像素');
+    return cropImage(blob, signal, runtime, (width, height) => {
       if(width!==height)throw Error('原始图片为 '+width+'×'+height+'，不是正方形，未裁切或拉伸；请下载原图');
       if(!Number.isSafeInteger(width) || width<2 || width%2)throw Error('原始图片边长须为大于等于2的偶数，才能无损等分四张；请下载原图');
       const side=width/2, outputSide=side-2*inset;
       if(outputSide<1)throw Error('原始图片太小，每个象限四边内缩'+inset+'px后无有效像素；请下载原图');
-      canvas.width=outputSide;canvas.height=outputSide;ctx.imageSmoothingEnabled=false;
-      const images=[];
-      for(const [x,y] of [[0,0],[side,0],[0,side],[side,side]]){
-        stopped();
-        try{ctx.clearRect(0,0,outputSide,outputSide);ctx.drawImage(bitmap,x+inset,y+inset,outputSide,outputSide,0,0,outputSide,outputSide);}
-        catch{throw Error('Canvas 像素裁切失败，请下载原图恢复；不会重新调用付费API');}
-        let cropped;
-        try{cropped=await new Promise((resolve,reject)=>canvas.toBlob(b=>b?.size?resolve(b):reject(Error('empty canvas result')),'image/png'));}
-        catch{throw Error('Canvas 裁切导出失败，原始拼版图可下载；不会自动重新生图');}
-        images.push(cropped);
-      }
-      stopped();return images;
-    } finally {bitmap?.close?.();canvas.width=0;canvas.height=0;}
+      const origins = [[0,0],[side,0],[0,side],[side,side]].map(([x,y]) => [x+inset,y+inset]);
+      return {width:outputSide, height:outputSide, origins};
+    }, hooks);
   }
-  async function crop3x1(blob, signal, runtime = root, insetRatio = 1/64) {
-    const {canvas,ctx}=checkCropSupport(runtime);let bitmap;
-    const stopped=()=>{if(signal?.aborted)throw new DOMException('裁切已停止；请保存原始拼版图，勿重复生图','AbortError');};
+  async function crop3x1(blob, signal, runtime = root, insetRatio = 1/64, hooks) {
+    return cropImage(blob, signal, runtime, (width, height) => {
+      const g = rules.detailGeometry(width, height, insetRatio);
+      const origins = [0, 1, 2].map(i => [i*g.column + g.insetX, g.insetY]);
+      return {width:g.width, height:g.height, origins};
+    }, hooks);
+  }
+  function errorDetail(error) {
+    const cause = error?.error ?? error;
+    const message = cause?.message || cause?.msg || error?.message || (typeof error === 'string' ? error : '未知错误');
+    const code = cause?.code ?? error?.code;
+    const detail = String(message).replace(/https?:\/\/\S+/gi, '[URL]').slice(0, 300);
+    return code == null || detail.includes(String(code)) ? detail : `错误码 ${code}，${detail}`;
+  }
+  async function imageStage(stage, action) {
     try {
-      stopped();
-      try{bitmap=await runtime.createImageBitmap(blob,{imageOrientation:'none',premultiplyAlpha:'none',colorSpaceConversion:'none'});}
-      catch{throw Error('无法解码详情拼版图，请下载原图；不会重新调用付费API');}
-      const g=rules.detailGeometry(bitmap.width,bitmap.height,insetRatio);
-      canvas.width=g.width;canvas.height=g.height;ctx.imageSmoothingEnabled=false;
-      const images=[];
-      for(let i=0;i<3;i++){
-        stopped();
-        try{ctx.clearRect(0,0,g.width,g.height);ctx.drawImage(bitmap,i*g.column+g.insetX,g.insetY,g.width,g.height,0,0,g.width,g.height);}
-        catch{throw Error('详情图像素裁切失败，请下载原图；不会重新调用付费API');}
-        try{images.push(await new Promise((resolve,reject)=>canvas.toBlob(b=>b?.size?resolve(b):reject(Error('empty result')),'image/png')));}
-        catch{throw Error('Canvas 详情图导出失败，请下载原图；不会重新生图');}
-      }
-      stopped();return images;
-    } finally {bitmap?.close?.();canvas.width=0;canvas.height=0;}
+      return await action();
+    } catch (cause) {
+      const error = new Error(`${stage} 失败 · ${errorDetail(cause)}`, {cause});
+      if (cause?.name === 'AbortError') error.name = cause.name;
+      throw error;
+    }
   }
-  async function write({table, base, fid, rid, result, signal, append = false, onOriginal = () => {}}, fetcher = fetch) {
+  async function keepCheckpoint(save, report) {
+    try { await save(); }
+    catch (e) { report('recovery_save', errorDetail(e), true); }
+  }
+  function imageFile(blob, rid, index, mode = 'standard') {
+    const prefix = mode === 'standard' ? 'ai_' : (mode === 'crop_3x1' ? '详情页' : '主图') + String(index+1).padStart(2,'0') + '_';
+    return new File([blob], `${prefix}${rid.slice(-6)}_${Date.now()}_${index+1}.${MIME[blob.type]}`, {type:blob.type});
+  }
+  function resultBytes(base64) {
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64) || base64.length % 4) throw Error('返回的 Base64 图片无效');
+    if (typeof Uint8Array.fromBase64 === 'function') return Uint8Array.fromBase64(base64);
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+  async function recrop({job, signal, onCheckpoint = () => {}, report = () => {}}) {
+    await imageStage('crop', async () => {
+      if (job.originals.length !== 1) throw Error('裁切模式预期1张拼版图，实际返回'+job.originals.length+'张；原图已保留供下载');
+      const [original] = job.originals;
+      const hooks = {
+        onDecoded: (width, height) => {
+          report('original_image', `${width}×${height} · ${original.type} · ${original.size} 字节`);
+          report('crop_start', `开始裁切 · ${job.mode}`);
+        },
+        onPart: async (blob, i, width, height) => {
+          job.crops[i] = imageFile(blob, job.rid, i, job.mode);
+          report('crop_part', `第 ${i+1} 张已裁切 · ${width}×${height}`);
+          await keepCheckpoint(() => onCheckpoint(job), report);
+        }
+      };
+      if (job.mode === 'crop_3x1') await crop3x1(original, signal, root, job.detailInsetRatio, hooks);
+      else await crop2x2(original, signal, root, AUTO_CROP_INSET_PX, hooks);
+      job.cropComplete = true;
+      await keepCheckpoint(() => onCheckpoint(job), report);
+      report('crop_complete', `裁切成功 ${job.crops.length} 张`);
+    });
+  }
+  async function uploadAndWrite({table, base, fid, rid, files, signal, append, job, onCheckpoint, report}) {
+    const readExisting = () => imageStage('getCellValue', async () => {
+      const value = append ? await table.getCellValue(fid, rid) : [];
+      if (value != null && !Array.isArray(value)) throw Error('输出不是附件字段');
+      return value || [];
+    });
+    let uploads = files.map((file, index) => ({file, index}));
+    const attachments = job?.attachments?.slice() || [];
+    // A rejected SDK promise can arrive after the cell has already been updated.
+    // Recover only the files still missing from that previous write attempt.
+    const isPresent = (attachment, existing) => attachment && existing.some(value => value?.token === attachment.token && value?.name === attachment.name);
+    if (attachments.length) {
+      const existing = await readExisting();
+      uploads = uploads.filter(({index}) => !isPresent(attachments[index], existing));
+    }
+    throwIfStopped(signal);
+    if (uploads.length) {
+      await imageStage('batchUploadFile', async () => {
+        report('upload_start', `开始上传飞书附件 · ${uploads.length} 张`);
+        const tokens = await base.batchUploadFile(uploads.map(({file}) => file));
+        const count = Array.isArray(tokens) ? tokens.filter(t => typeof t === 'string' && t).length : 0;
+        if (tokens?.length !== uploads.length || count !== uploads.length) {
+          throw Error(`飞书上传未返回全部附件 token（${count}/${uploads.length}），输出单元格未修改`);
+        }
+        uploads.forEach(({file, index}, i) => {
+          attachments[index] = {name:file.name, size:file.size, type:file.type, token:tokens[i], timeStamp:file.lastModified};
+        });
+        report('upload_complete', `上传成功 ${count} 张`);
+      });
+      if (job) {
+        job.attachments = attachments;
+        await keepCheckpoint(() => onCheckpoint(job), report);
+      }
+    }
+    throwIfStopped(signal);
+    const existing = await readExisting();
+    const missing = attachments.filter(value => !isPresent(value, existing));
+    if (missing.length) {
+      await imageStage('setCellValue', async () => {
+        throwIfStopped(signal);
+        report('write_start', `开始回写字段 ${fid}`);
+        const written = await table.setCellValue(fid, rid, [...existing, ...missing]);
+        if (written === false) throw Error('飞书 SDK 返回 false');
+      });
+    }
+    report('write_complete', `回写成功 · ${files.length} 张附件已在字段 ${fid}`);
+    return files.reduce((sum, file) => sum + file.size, 0);
+  }
+  async function uploadCrops({job, table, base, signal, onCheckpoint = () => {}, report = () => {}}) {
+    if (!job.cropComplete) throw Error('请先完成重新裁切');
+    return uploadAndWrite({table, base, fid:job.fid, rid:job.rid, files:job.crops, signal, append:true, job, onCheckpoint, report});
+  }
+  async function write({table, base, fid, rid, result, signal, append = false, job, onCheckpoint = () => {}, onOriginal = () => {}, report = () => {}}, fetcher = fetch) {
     const images = result.images || [result];
     if (!images.length || images.length > 10) throw Error('返回的图片数量无效');
-    const mode=rules.generationMode(result.generationMode,result.autoCrop2x2);
-    const files = [], originals=[];
-    const makeFile=(blob,index,cropped=false)=>new File([blob], (cropped?(mode==='crop_3x1'?'详情页':'主图')+String(index+1).padStart(2,'0')+'_':'ai_') + rid.slice(-6) + '_' + Date.now() + '_' + (index+1) + '.' + MIME[blob.type], {type:blob.type});
+    const mode = rules.generationMode(result.generationMode, result.autoCrop2x2);
+    report('generation_mode', `结果生成策略 · ${mode}`);
+    const files = [];
+    if (mode !== 'standard') {
+      job ??= {rid, fid};
+      Object.assign(job, {mode, detailInsetRatio:result.detailInsetRatio ?? 1/64, originals:[], crops:[], cropComplete:false});
+    }
     for (const [i, image] of images.entries()) {
-      let response;
-      if (image.b64) {
-        if (!/^[A-Za-z0-9+/]+={0,2}$/.test(image.b64) || image.b64.length % 4) throw Error('返回的 Base64 图片无效');
-        const bytes = Uint8Array.from(atob(image.b64), c => c.charCodeAt(0));
-        response = new Response(bytes, {headers:{'Content-Type':'image/png'}});
-      } else response = await fetcher(image.url, {signal});
-      const blob = await imageBlob(response);
-      if(mode!=='standard'){originals.push(blob);await onOriginal(blob);}
-      else files.push(makeFile(blob,i));
+      const blob = await imageStage('result_blob', async () => image.b64
+        ? validateImageBlob(new Blob([resultBytes(image.b64)], {type:'image/png'}))
+        : imageBlob(await fetcher(image.url, {signal})));
+      if (mode === 'standard') files.push(imageFile(blob, rid, i));
+      else {
+        job.originals.push(blob);
+        report('original_saved', `已取得拼版原图 ${i+1} · ${blob.type} · ${blob.size} 字节`);
+        await keepCheckpoint(() => onCheckpoint(job), report);
+        await keepCheckpoint(() => onOriginal(blob), report);
+      }
     }
-    if(mode!=='standard'){
-      if(originals.length!==1)throw Error('裁切模式预期1张拼版图，实际返回'+originals.length+'张；原图已保留供下载，未自动重试');
-      const cropped=mode==='crop_3x1'?await crop3x1(originals[0],signal,root,result.detailInsetRatio ?? 1/64):await crop2x2(originals[0],signal);
-      files.push(...cropped.map((blob,i)=>makeFile(blob,i,true)));
+    if (mode !== 'standard') {
+      await recrop({job, signal, onCheckpoint, report});
+      return uploadAndWrite({table, base, fid, rid, files:job.crops, signal, append, job, onCheckpoint, report});
     }
-    if (signal?.aborted) throw new DOMException('已停止', 'AbortError');
-    const tokens = await base.batchUploadFile(files);
-    if (!Array.isArray(tokens) || tokens.length !== files.length || tokens.some(t=>typeof t!=='string'||!t)) throw Error('飞书上传未返回全部附件 token，未修改输出单元格；勿重复生图以免扣费');
-    if (signal?.aborted) throw new DOMException('已停止', 'AbortError');
-    const existing = append ? await table.getCellValue(fid, rid) : [];
-    if (existing != null && !Array.isArray(existing)) throw Error('输出不是附件字段，未修改原结果');
-    await table.setCellValue(fid, rid, [...(existing || []), ...files.map((file,i)=>({name:file.name, size:file.size, type:file.type, token:tokens[i], timeStamp:file.lastModified}))]);
-    return files.reduce((sum,file)=>sum+file.size,0);
+    return uploadAndWrite({table, base, fid, rid, files, signal, append, report});
   }
-  const api = {checkCropSupport, crop2x2, crop3x1, endpoint, isImage, lookupImages, lookupAttachmentUrls, assertProductImageFields, attachmentUrls, imageBlob, generate, write};
+  const api = {checkCropSupport, crop2x2, crop3x1, endpoint, isImage, lookupImages, lookupAttachmentUrls, assertProductImageFields, attachmentUrls, imageBlob, generate, write, recrop, uploadCrops};
   if (typeof module !== 'undefined') module.exports = api; else root.ImageAPI = api;
 })(globalThis);
