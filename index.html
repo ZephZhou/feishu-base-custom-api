@@ -41,6 +41,9 @@
   #templateOutputHint.warn {color:#bc651b;}
   .image-detail {background:#fbfcfe;border:1px solid #e7ebf1;border-radius:8px;margin-top:10px;padding:9px 10px;}
   .image-detail summary {font-weight:600;color:#344054;cursor:pointer;font-size:12px;}
+  #cropOriginals {color:#344054;}
+  .crop-recovery-item {border-top:1px solid #e3e9f1;margin:6px 0;padding-top:6px;}
+  #cropOriginals button {margin:4px 6px 0 0;padding:3px 8px;font-size:11px;}
   #brandSlots {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;}
   #brandSlots > div {border:1px solid #e5e9f0;border-radius:8px;padding:7px;min-width:0;background:#fff;}
   #brandSlots img {display:block;max-width:100%;max-height:100px;object-fit:contain;margin:5px 0;}
@@ -51,7 +54,7 @@
 </style>
 </head>
 <body>
-<h1>🔌 多维表格 · 自定义 API 插件</h1>
+<h1>🔌 多维表格 · 自定义 API 插件 v1.0.1</h1>
 <div class="sub">选输入列 → 写提示词 → 批量生成文本/图片/视频写回表格</div>
 
 <div class="card">
@@ -154,9 +157,9 @@
   </div>
   <div id="imageExtras" style="display:none">
     <div id="cropOriginals" class="hint" hidden>
-      <p>已付费拼版原图下载（仅当前页面有效，请在关闭或刷新前保存）：</p>
+      <p>拼版下载与失败恢复。恢复操作无需再次生图。</p>
       <div id="cropOriginalLinks"></div>
-      <button id="clearCropOriginals" type="button">清除下载链接（释放内存）</button>
+      <button id="clearCropOriginals" type="button" hidden>清除已完成的下载记录</button>
     </div>
     <details id="imageAdvanced" class="image-detail"><summary>高级设置 · 生成策略与图片尺寸</summary>
       <label>模板生成策略</label><select id="generationMode"><option value="standard">标准图片生成</option><option value="crop_2x2">主图2×2拼版</option><option value="crop_3x1">详情3×1拼版</option></select>
@@ -554,9 +557,10 @@ html body {
 //# sourceMappingURL=/sm/a6f526bd5d6e5f46169550416b3eea14dc63ecfa095a21af51c761e6443576fa.map
 window.__BITABLE__ = tQ;  /* tQ = SDK内部 export{ tQ as bitable } 的真实别名 */
 </script>
-<script src="./server/image-rules.js"></script>
-<script src="./image-api.js?v=lookup-image-20261125"></script>
-<script src="./image-options.js"></script>
+<script src="./server/image-rules.js?v=1.0.1"></script>
+<script src="./image-api.js?v=1.0.1"></script>
+<script src="./image-options.js?v=1.0.1"></script>
+<script src="./image-recovery.js?v=1.0.1"></script>
 <script type="module">
 const $ = id => document.getElementById(id);
 const log = (msg, isErr) => { const el = $('log'); el.style.display='block'; el.textContent += (isErr?'✗ ':'') + msg + '\n'; el.scrollTop = el.scrollHeight; };
@@ -694,7 +698,7 @@ function switchTaskType() {
 // ── 全局状态 ──
 let table = null, tableId = null, fieldMetas = [];
 let running = false, stopFlag = false;
-let imageOptions = null, imageRunOptions = null;
+let imageOptions = null, imageRunOptions = null, imageRecovery = null, recovering = false;
 const aborters = new Set();
 const MAX_IMGS_PER_ROW = 16;
 const IMAGE_REQ_TIMEOUT_MS = 1020000; // 参考图下载 + 上传300秒 + 生成600秒 + 回写缓冲；不自动重试
@@ -744,6 +748,7 @@ async function init() {
   ['maxRows','concurrency'].forEach(id => $(id).addEventListener('input', updateBatchHelp));
   $('skipMode').addEventListener('change', updateBatchHelp);
   imageOptions = await ImageOptions.init({$, cfg, saveCfg, getTableId: () => tableId, onError: message => log(message, 1)});
+  imageRecovery = await ImageRecovery.init({$, runRecovery, log});
   $('taskType').addEventListener('change', switchTaskType);
   toggleTaskUI();
   try { await refreshTable(); } catch (e) { log('读取表格失败: ' + (e && e.message ? e.message : e), 1); }
@@ -870,9 +875,50 @@ async function callImage(input, signal) {
     text: input.text, imageUrls: input.imageUrls,
     onProgress: d => log('图片请求 ' + d.request_id + ' · ' + d.stage + ' · ' + (d.elapsed_ms / 1000).toFixed(1) + '秒') }, signal);
 }
-async function writeImage(fid, rid, result, signal) {
-  return ImageAPI.write({table, base: bitable.base, fid, rid, result, signal, append:true,
-    onOriginal: blob => imageOptions.keepOriginal(blob, rid)});
+function reportImage(job) {
+  return (stage, message, isError) => log(`图片 ${job.id} · ${job.sku ? 'SKU '+job.sku : '行 '+job.rid.slice(-6)} · ${stage} · ${message}`, isError);
+}
+async function writeImage(imageTable, fid, rid, sku, result, signal) {
+  const job = {id:result.requestId, tableId:imageTable.id, fid, rid, sku, fieldName:fieldMetas.find(f => f.id === fid)?.name};
+  try {
+    const size = await ImageAPI.write({table:imageTable, base:bitable.base, fid, rid, result, signal, append:true,
+      job, onCheckpoint:imageRecovery.checkpoint, report:reportImage(job)});
+    if (job.originals?.length) await imageRecovery.complete(job);
+    return size;
+  } catch (e) {
+    imageRecovery.failed(job);
+    throw new Error(`图片 ${job.id} · ${e.message}`, {cause:e});
+  }
+}
+
+async function runRecovery(job, action) {
+  if (running || recovering) {
+    log('请等当前生成或恢复操作结束后再恢复', true);
+    return;
+  }
+  recovering = true;
+  const report = reportImage(job);
+  const context = {job, onCheckpoint:imageRecovery.checkpoint, report};
+  try {
+    $('imageError').textContent = '';
+    if (action === 'crop') {
+      await ImageAPI.recrop(context);
+      imageRecovery.failed(job);
+    } else {
+      const targetTable = await bitable.base.getActiveTable();
+      if (targetTable.id !== job.tableId) throw Error('请切回原数据表后重试回写');
+      const fields = await targetTable.getFieldMetaList();
+      if (!fields.some(field => field.id === job.fid && field.type === 17)) throw Error('原输出列已不存在或已更改类型');
+      await ImageAPI.uploadCrops({...context, table:targetTable, base:bitable.base});
+      await imageRecovery.complete(job);
+    }
+  } catch (e) {
+    imageRecovery.failed(job);
+    $('imageError').textContent = e.message;
+    report('recovery_error', e.message, true);
+  } finally {
+    recovering = false;
+  }
 }
 
 // ══════════ 🎬 视频生成(全行业都是异步任务制:提交→轮询→取片) ══════════
@@ -1131,10 +1177,11 @@ async function processRecords(recordIds) {
         if ($('skipMode').value === 'skip' && await cellFilled(outFid, rid)) { skip++; log('· 行' + rid.slice(-6) + (isTextMode() ? ' 已有文案,跳过' : ' 已有图,跳过')); continue; }
         const input = await buildInput(rid);
         if (!input) { skip++; log('· 行' + rid.slice(-6) + ' 无参考图/无提示词,跳过'); continue; }
+        let sku = '';
         if (isImageMode()) {
-          const sku=fieldMetas.find(f=>/^SKU$/i.test(f.name.trim()));
-          const value=sku?await table.getCellString(sku.id,rid).catch(()=>''):'';
-          log('商品原图核验：SKU '+(value||rid.slice(-6))+'；商品原图 '+input.imageUrls.length+' 张（附件/查找引用），固定品牌图 '+(imageRunOptions?.brandImages?.length||0)+' 张；本次请求使用当前行图片。');
+          const skuField=fieldMetas.find(f=>/^SKU$/i.test(f.name.trim()));
+          sku=skuField?await table.getCellString(skuField.id,rid).catch(()=>''):'';
+          log('商品原图核验：SKU '+(sku||rid.slice(-6))+'；商品原图 '+input.imageUrls.length+' 张（附件/查找引用），固定品牌图 '+(imageRunOptions?.brandImages?.length||0)+' 张；本次请求使用当前行图片。');
         }
         const ac = new AbortController(); aborters.add(ac);
         const timer = setTimeout(() => ac.abort(), isImageMode() ? IMAGE_REQ_TIMEOUT_MS : REQ_TIMEOUT_MS);   // 硬超时防空转
@@ -1145,9 +1192,10 @@ async function processRecords(recordIds) {
             done++;
             log('✅ 行' + rid.slice(-6) + ' 文本写入完成(' + txt.length + '字)');
           } else {
-            await table.getCellValue(outFid, rid); // 先确认可读，避免付费后才发现无法保留旧附件
+            const imageTable = table;
+            await imageTable.getCellValue(outFid, rid); // 先确认可读，避免付费后才发现无法保留旧附件
             const res = await callImage(input, ac.signal);
-            const sz = await writeImage(outFid, rid, res, ac.signal);
+            const sz = await writeImage(imageTable, outFid, rid, sku, res, ac.signal);
             if (res.images.length !== res.expectedCount) log('上游返回 ' + res.images.length + '/' + res.expectedCount + ' 张，有效图片已保留；不自动重试以免重复扣费', 1);
             done++;
             const uploaded=res.generationMode==='crop_3x1'?3:res.generationMode==='crop_2x2'?4:res.images.length;
@@ -1166,6 +1214,7 @@ async function processRecords(recordIds) {
 }
 
 async function guardedRun(getTargets, allowStopToggle, processor, opts) {
+  if (recovering) { log('请等图片恢复操作结束后再运行', 1); return; }
   if (running) {
     if (allowStopToggle) { stopFlag = true; aborters.forEach(a => a.abort()); log('⏹ 停止中…在途请求已中断'); }
     else log('正在运行中,先停止再试', 1);
@@ -1183,6 +1232,7 @@ async function guardedRun(getTargets, allowStopToggle, processor, opts) {
       const metas=selectedInputs().map(fieldMetaByName);
       ImageAPI.assertProductImageFields(metas);
       imageRunOptions = imageOptions.snapshot();
+      log(`当前模板 ${imageRunOptions.templateName} · 生成策略 ${imageRunOptions.generationMode}`);
       const imageSources=metas.filter(f=>f.type===17||(f.type===19&&/图|图片|照片|封面|image|photo/i.test(f.name)));
       if (imageRunOptions.generationMode!=='standard' && !imageSources.length) throw Error('主图/详情页模式必须选择本表附件或查找引用图片输入列，避免只传品牌图生成错误商品。');
       if (imageSources.some(f=>f.id===$('outputSel').value))throw Error('输出列不能同时作为商品原图输入列');

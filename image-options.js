@@ -11,7 +11,7 @@
     if (template.generationMode == null && template.autoCrop2x2 !== undefined && typeof template.autoCrop2x2 !== 'boolean') throw Error('模板自动裁切字段格式错误');
     if (template.outputFieldId != null && typeof template.outputFieldId !== 'string') throw Error('模板输出列配置格式错误');
     if (template.outputTableId != null && typeof template.outputTableId !== 'string') throw Error('模板所属数据表配置格式错误');
-    const mode=rules.generationMode(template.generationMode,template.autoCrop2x2);
+    const mode=template.id==='main' ? 'crop_2x2' : rules.generationMode(template.generationMode,template.autoCrop2x2);
     return {...template,generationMode:mode,autoCrop2x2:mode==='crop_2x2',n:mode==='standard'?(template.n ?? 1):1,detailInsetRatio:template.detailInsetRatio ?? 1/64};
   }
   // Field IDs belong to a concrete table: never silently target another attachment column.
@@ -100,11 +100,13 @@
     });
     const crop=$('autoCrop2x2'), count=$('imageCount'), mode=$('generationMode'), detailInset=$('detailInsetRatio');
     const selected=templates.find(t=>t.id===select.value);
-    mode.value=rules.generationMode(cfg.generationMode ?? (cfg.autoCrop2x2===undefined?selected?.generationMode:undefined),cfg.autoCrop2x2);
+    mode.value=selected?.id==='main' ? selected.generationMode : rules.generationMode(cfg.generationMode ?? (cfg.autoCrop2x2===undefined?selected?.generationMode:undefined),cfg.autoCrop2x2);
     crop.dataset.normalCount=String((mode.value==='standard'?cfg.imageCount:cfg.imageCountBeforeCrop) || cfg.imageCount || 1);
     const setInset=value=>{const text=String(value);if(![...detailInset.options].some(o=>o.value===text))detailInset.add(new Option('已保存内缩比例 '+text,text));detailInset.value=text;};
     setInset(cfg.detailInsetRatio ?? selected?.detailInsetRatio ?? 1/64);
     const sync=()=>{
+      mode.disabled=select.value==='main';
+      if(mode.disabled)mode.value='crop_2x2';
       crop.checked=mode.value==='crop_2x2';count.disabled=mode.value!=='standard';
       count.value=count.disabled?'1':crop.dataset.normalCount;
       $('standardCount').hidden=count.disabled;$('detailInsetRow').hidden=mode.value!=='crop_3x1';
@@ -116,10 +118,15 @@
     crop.onchange=()=>{mode.value=crop.checked?'crop_2x2':'standard';sync();validate();saveCfg();};
     mode.onchange=()=>{sync();validate();saveCfg();};
     detailInset.onchange=()=>{validate();saveCfg();};
-    $('imageWidth').value=cfg.imageWidth ?? (cfg.imgSize && cfg.imgSize!=='custom'?cfg.imgSize:'1024x1024').split('x')[0];
-    $('imageHeight').value=cfg.imageHeight ?? (cfg.imgSize && cfg.imgSize!=='custom'?cfg.imgSize:'1024x1024').split('x')[1];
-    if(!cfg.imgSize)$('imgSize').value='1024x1024';
-    const current=()=>rules.generationOptions($('imageWidth').value+'x'+$('imageHeight').value,count.value,mode.value,Number(detailInset.value));
+    const draftMode=cfg.generationMode ?? (cfg.autoCrop2x2===false?'standard':undefined);
+    const useMainSize=selected?.id==='main' && draftMode && draftMode!=='crop_2x2';
+    const storedSize=useMainSize ? selected.size : cfg.imgSize;
+    const [savedWidth,savedHeight]=(storedSize && storedSize!=='custom'?storedSize:selected?.size || '1024x1024').split('x');
+    $('imageWidth').value=(!useMainSize && cfg.imageWidth) || savedWidth;
+    $('imageHeight').value=(!useMainSize && cfg.imageHeight) || savedHeight;
+    const size=$('imageWidth').value+'x'+$('imageHeight').value;
+    $('imgSize').value=[...$('imgSize').options].some(o=>o.value===size)?size:'custom';
+    const current=()=>rules.generationOptions($('imageWidth').value+'x'+$('imageHeight').value,count.value,select.value==='main'?'crop_2x2':mode.value,Number(detailInset.value));
     function validate(){try{current();setError('');return true;}catch(e){setError(e.message);return false;}}
     select.onchange=()=>show(()=>{
       const t=templates.find(t=>t.id===select.value);$('templateName').value=t?.name || '';
@@ -127,7 +134,7 @@
         $('prompt').value=t.prompt;mode.value=t.generationMode;setInset(t.detailInsetRatio);setCount(t.n);
         const [w,h]=t.size.split('x');$('imageWidth').value=w;$('imageHeight').value=h;
         $('imgSize').value=[...$('imgSize').options].some(o=>o.value===t.size)?t.size:'custom';
-      }
+      } else sync();
       restoreOutputForTable();
     });
     select.addEventListener('change',validate);
@@ -147,7 +154,7 @@
     });
     $('deleteTemplate').onclick=()=>show(()=>{
       if(!select.value)throw Error('请先选择要删除的模板');
-      const next=templates.filter(t=>t.id!==select.value);saveTemplates(localStorage,next);templates=next;drawTemplates();
+      const next=templates.filter(t=>t.id!==select.value);saveTemplates(localStorage,next);templates=next;drawTemplates();sync();
     });
     $('imgSize').addEventListener('change',()=>{if($('imgSize').value!=='custom'){const [w,h]=$('imgSize').value.split('x');$('imageWidth').value=w;$('imageHeight').value=h;}validate();saveCfg();});
     ['imageWidth','imageHeight','imageCount'].forEach(id=>$(id).addEventListener('input',()=>{if(id!=='imageCount')$('imgSize').value='custom';else if(mode.value!=='standard')count.value='1';else crop.dataset.normalCount=count.value;validate();saveCfg();}));
@@ -171,19 +178,10 @@
       };
       remove.onclick=async()=>{pending++;input.disabled=remove.disabled=true;try{await slot('delete',i);drawSlot(i,null);setError('');}catch(e){setError(e.message);}finally{pending--;input.disabled=remove.disabled=false;}};
     }
-    const originals=[];
-    $('clearCropOriginals').onclick=()=>{originals.forEach(url=>URL.revokeObjectURL(url));originals.length=0;$('cropOriginalLinks').replaceChildren();$('cropOriginals').hidden=true;};
-    const keepOriginal=(blob,rid)=>{
-      const url=URL.createObjectURL(blob);originals.push(url);
-      const link=document.createElement('a');link.href=url;link.download='拼版原图_'+rid.slice(-6)+'_'+Date.now()+'.'+({'image/jpeg':'jpg','image/webp':'webp'}[blob.type] || 'png');
-      link.textContent='下载拼版原图（行 '+rid.slice(-6)+'）';link.style.display='block';
-      $('cropOriginalLinks').append(link);$('cropOriginals').hidden=false;
-    };
     return {
-      keepOriginal,
       validate,
       restoreOutputForTable,
-      snapshot:()=>{if(pending)throw Error('品牌图正在保存，请稍后生成');if(!storageReady)throw Error('品牌图读取失败，已停止生成以免遗漏参考图；请恢复浏览器存储权限后刷新');const value=current();if(value.generationMode!=='standard')root.ImageAPI.checkCropSupport();return {...value,promptTemplate:$('prompt').value,brandImages:brandImages.filter(Boolean)};}
+      snapshot:()=>{if(pending)throw Error('品牌图正在保存，请稍后生成');if(!storageReady)throw Error('品牌图读取失败，已停止生成以免遗漏参考图；请恢复浏览器存储权限后刷新');const value=current();if(value.generationMode!=='standard')root.ImageAPI.checkCropSupport();return {...value,templateName:$('templateName').value || '未命名模板',promptTemplate:$('prompt').value,brandImages:brandImages.filter(Boolean)};}
     };
   }
   const api={defaults,normalizeTemplate,resolveTemplateOutput,loadTemplates,saveTemplates,TEMPLATE_KEY,init};
